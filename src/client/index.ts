@@ -14,7 +14,10 @@ import { RecallParamsCard, type OksScope } from './RecallParamsCard.tsx'
 import { OksGlobalSurface, OksPanel, OksSidebarTab } from './OksPanel.tsx'
 import type { OksConnectionRpc } from './rpc.ts'
 
-export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope', 'betterSidebar']
+// betterSidebar is intentionally not a core dependency. The core settings,
+// overlay, Wiki, and Raw surfaces must remain available when the optional UI
+// extension is not installed.
+export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
 
 interface BetterSidebarLike {
   registerTab(descriptor: {
@@ -28,34 +31,42 @@ interface BetterSidebarLike {
   openTab(seed: { type: string; title?: string; path?: string }): void
 }
 
-function createHttpRpc(): OksConnectionRpc {
+function unavailableRpc(): OksConnectionRpc {
   return {
-    async call(channel, endpoint, payload, signal) {
-      const rpcId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-      const response = await fetch(`${channel}/${endpoint}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload }),
-        signal,
-      })
-      if (!response.ok) throw new Error(`OKS 请求失败：HTTP ${response.status}`)
-      const result = await response.json() as { rpcId?: string; result?: unknown }
-      if (result.rpcId !== rpcId) throw new Error('OKS 请求响应标识不匹配')
-      return result.result as Awaited<ReturnType<OksConnectionRpc['call']>>
+    async call() {
+      return { ok: false, error: { message: 'OKS 连接接口暂不可用' } }
     },
   }
 }
 
 function getOksRpc(ctx: ClientContext): OksConnectionRpc {
   const candidate = ctx.connection.rpc as unknown as Partial<OksConnectionRpc> | null | undefined
-  return candidate && typeof candidate.call === 'function' ? candidate as OksConnectionRpc : createHttpRpc()
+  return candidate && typeof candidate.call === 'function' ? candidate as OksConnectionRpc : unavailableRpc()
+}
+
+function installSidebar(ctx: ClientContext, scope: OksScope, rpc: OksConnectionRpc): void {
+  ctx.plugin({
+    name: 'dsh-oks-sidebar',
+    inject: ['betterSidebar'],
+    apply(sidebarCtx) {
+      const betterSidebar = sidebarCtx.get('betterSidebar') as BetterSidebarLike
+      sidebarCtx.effect(() => betterSidebar.registerTab({
+        id: 'oks:context',
+        title: 'OKS',
+        icon: '◌',
+        order: 45,
+        single: true,
+        component: () => OksSidebarTab({ scope, rpc }),
+      }), 'dsh-oks: better-sidebar tab')
+    },
+  })
 }
 
 export function apply(ctx: ClientContext): void {
   const scope: OksScope = ctx.settingsScope.bind({ namespace: 'oks' })
   const rpc = getOksRpc(ctx)
-  const betterSidebar = (ctx as unknown as { betterSidebar?: BetterSidebarLike }).betterSidebar
   const openSidebar = () => {
+    const betterSidebar = ctx.get('betterSidebar', false) as BetterSidebarLike | undefined
     if (!betterSidebar || typeof betterSidebar.openTab !== 'function') return false
     // The host expands the right workbench for content opens. A private
     // virtual path gives this non-file tab the same focus/expand semantics
@@ -63,17 +74,7 @@ export function apply(ctx: ClientContext): void {
     betterSidebar.openTab({ type: 'oks:context', title: 'OKS 上下文', path: 'oks://context' })
     return true
   }
-  ctx.effect(() => {
-    if (!betterSidebar || typeof betterSidebar.registerTab !== 'function') return undefined
-    return betterSidebar.registerTab({
-      id: 'oks:context',
-      title: 'OKS',
-      icon: '◌',
-      order: 45,
-      single: true,
-      component: () => OksSidebarTab({ scope, rpc }),
-    })
-  }, 'dsh-oks: better-sidebar tab')
+  installSidebar(ctx, scope, rpc)
   const settingsCard = (props: unknown) =>
     RecallParamsCard({ scope, ...(props as Record<string, unknown>) })
   const panel = (props: unknown) =>

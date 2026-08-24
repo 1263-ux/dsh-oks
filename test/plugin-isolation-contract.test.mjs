@@ -9,6 +9,24 @@ test('browser entry remains namespaced and removable without host DOM coupling',
   assert.match(source, /namespace: 'oks'/)
   assert.doesNotMatch(source, /document\.(querySelector|getElementById|body)/)
   assert.doesNotMatch(source, /window\.(location|history)\./)
+  assert.match(source, /export const inject = \['slots', 'locale', 'connection', 'remote', 'settingsScope'\]/)
+  assert.match(source, /ctx\.plugin\(\{[\s\S]*name: 'dsh-oks-sidebar',[\s\S]*inject: \['betterSidebar'\]/)
+  assert.match(source, /ctx\.get\('betterSidebar', false\)/)
+})
+
+test('post-tool signal delegates relevance filtering to the OKS CLI floor', async () => {
+  const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
+  assert.match(source, /OKS CLI --floor is authoritative/)
+  assert.match(source, /parseSignal\(out, query, floor, activeConfig\.posttool_signal_rel_floor\)/)
+  assert.doesNotMatch(source, /topRelevance.*signalRelFloor/)
+})
+
+test('compiled post-tool signal keeps normalized fts5 relevance despite legacy threshold', async () => {
+  const { parseSignal } = await import('../lib/index.mjs')
+  const result = parseSignal(JSON.stringify({
+    knowledge: [{ slug: 'fts5-hit', title: 'FTS5 hit', type: 'wiki', relevance: 0.95 }],
+  }), 'query', 0.9, 2.5)
+  assert.deepEqual(result?.slugs, ['fts5-hit'])
 })
 
 test('host activity surface is bounded and does not expose raw prompt paths', async () => {

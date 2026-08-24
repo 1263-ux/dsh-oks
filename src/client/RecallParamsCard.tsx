@@ -196,7 +196,7 @@ export function RecallParamsCard(props: RecallParamsCardProps): ReactNode {
                 <option value="full">full（注入正文）</option>
               </select>
             </Field>
-            <Field id={gid('ps')} lab="信号门槛" h="信号模式的相关度门槛，达到较高值才注入">
+            <Field id={gid('ps')} lab="旧版信号门槛（兼容保留）" h="新版由 OKS CLI 的工具召回门槛统一控制；此字段仅保留旧配置，不再作为第二次过滤">
               <input id={gid('ps')} style={input} type="number" step="0.1" min="0" max="10"
                 value={Number(v.posttool_signal_rel_floor ?? 2.5)}
                 onChange={(e) => up('posttool_signal_rel_floor', parseFloat(e.target.value))} />
