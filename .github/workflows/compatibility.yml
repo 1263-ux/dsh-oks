@@ -31,8 +31,7 @@ jobs:
         with:
           node-version: 22.x
       - run: npm install --ignore-scripts --legacy-peer-deps
-      - run: npm install --no-save --ignore-scripts --legacy-peer-deps @deepseek-ai/dsh@0.1.0-rc.8 dsh-better-sidebar@0.15.2
-      - run: npm ls @deepseek-ai/dsh dsh-better-sidebar @deepseek-ai/cordis --depth=0
       - run: npm test
       - run: npm run build
       - run: npm run verify:pack
+      - run: node scripts/dsh-rc8-smoke.mjs
