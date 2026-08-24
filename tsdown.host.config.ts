@@ -11,7 +11,9 @@ export default defineConfig({
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',
-  target: 'node24',
+  // Node 22 is the minimum supported runtime; the emitted ESM is also
+  // checked under Node 24 in CI/release verification.
+  target: 'node22',
   fixedExtension: false,
   dts: false,
   clean: false,

@@ -26,13 +26,20 @@ oks config set knowledge_base_path <knowledge-base-path>
 
 ### 安装插件
 
+兼容基线为 DSH `0.1.0-rc.8` 和 Node.js `22+`。OKS 核心功能不依赖
+`dsh-better-sidebar`；安装它后才会额外出现可停靠的 OKS 侧边栏、Wiki 浏览器和
+Raw 浏览器入口。缺少该插件时，设置页、知识库查询和 AI 工具仍应正常加载。
+
+建议在生产环境显式固定 `dsh-better-sidebar` 的版本（rc.8 建议从 `0.14.0` 起，
+当前部署可固定到经过验收的 `0.15.2`），不要直接跟随 `main`。
+
 生产部署请固定 tag 或 commit，避免重新安装时获取到不同代码：
 
 ```bash
 dsh plugin --profile web add github:open-agent-power/dsh-oks#<commit-or-tag>
 ```
 
-开发分支才使用不带 pin 的地址。发布包已经包含 host 与 browser 构建产物；
+开发分支才使用不带 pin 的地址。发布包只包含 host 与 browser 编译产物；
 如果从源码 checkout 安装或升级，先执行 `pnpm run build`。安装或升级后重启
 DSH Web，让它重新扫描插件的 browser bundle。
 

@@ -212,15 +212,19 @@ function parseRecall(stdout: string): ParsedRecall | null {
   } catch { return null }
 }
 /** A short post-tool signal: mirrors pi's post-tool-edit.py signal mode.
- * The signal contains slugs and relevance only; the model can call oks_recall for details. */
-export function parseSignal(stdout: string, query: string, floor: number, signalRelFloor = 0): ParsedRecall | null {
+ * The signal contains slugs and relevance only; the model can call oks_recall for details.
+ *
+ * OKS CLI --floor is authoritative. Older dsh-oks releases applied a second
+ * local threshold (default 2.5), which silently rejected normalized fts5
+ * relevance values in the 0..1 range. Keep the optional fourth argument for
+ * source compatibility, but intentionally do not use it as a second filter.
+ */
+export function parseSignal(stdout: string, query: string, floor: number, _legacySignalRelFloor?: number): ParsedRecall | null {
   try {
     const data = JSON.parse(stdout) as { knowledge?: RecallHit[]; episodic?: EpisodicHit[] }
     const items = [...(data.knowledge ?? []), ...(data.episodic ?? [])]
     if (items.length === 0) return null
-    const topRelevance = items[0]?.relevance
-    if (typeof topRelevance === 'number' && topRelevance < signalRelFloor) return null
-    const lines = [`<!-- query="${query}" floor=${floor} signal_rel_floor=${signalRelFloor} (signal: slugs only, no body) -->`]
+    const lines = [`<!-- query="${query}" floor=${floor} (signal: slugs only, no body; OKS CLI floor is authoritative) -->`]
     for (const m of items) {
       if ('slug' in m) {
         lines.push(`- [${m.type ?? ''}] ${m.title ?? m.slug ?? ''} (slug: ${m.slug ?? ''}, rel: ${(m.relevance ?? 0).toFixed(2)})`)
@@ -720,7 +724,7 @@ export function apply(ctx: Context, config: OksConfig = {}) {
     const mode = activeConfig.posttool_mode === 'full' ? 'full' : 'signal'
     const signal = mode === 'full'
       ? parseRecall(out)
-      : parseSignal(out, query, floor, activeConfig.posttool_signal_rel_floor ?? 2.5)
+      : parseSignal(out, query, floor, activeConfig.posttool_signal_rel_floor)
     if (!signal) { updateTrace(traceId, 'empty'); recordActivity('posttool', 'Post-tool 信号', `工具 ${exec.name} 未命中相关知识`, 'info', traceId); return next() }
     recordActivity('posttool', 'Post-tool 信号', `工具 ${exec.name} 生成脱敏记忆提示`, 'ok', traceId)
     const downstream = await next()
