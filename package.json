@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "DeepSeek Harness plugin -- visualize and query the OKS knowledge base in the dsh Web UI",
   "type": "module",
+  "packageManager": "pnpm@11.19.0",
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -33,7 +34,8 @@
     "prepack": "tsdown && tsdown --config tsdown.host.config.ts",
     "watch": "tsdown --watch",
     "test": "node --test test/*.test.mjs",
-    "verify:pack": "node scripts/verify-pack.mjs"
+    "verify:pack": "node scripts/verify-pack.mjs",
+    "verify:entry": "node scripts/verify-production-entry.mjs"
   },
   "files": [
     "lib/client.js",
@@ -47,15 +49,16 @@
   "dependencies": {},
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.0-rc.8 <0.2.0",
-    "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-client-connection": "*",
-    "@deepseek-ai/dsh-client-runtime": "*",
-    "@deepseek-ai/dsh-client-ui-settings-plugins": "*",
-    "@deepseek-ai/dsh-llm": "*",
-    "@deepseek-ai/dsh-settings": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*",
-    "react": "^18.2.0",
+    "@deepseek-ai/cordis": ">=4.0.1 <5",
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.8 <0.2.0",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.8 <0.2.0",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.8 <0.2.0",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": ">=0.1.0-rc.8 <0.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.8 <0.2.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.0-rc.8 <0.2.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.8 <0.2.0",
+    "@deepseek-ai/schemastery": ">=3.18.1 <4",
+    "react": ">=18.2.0 <19",
     "dsh-better-sidebar": ">=0.14.0 <0.16.0"
   },
   "peerDependenciesMeta": {
@@ -64,16 +67,19 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-client-connection": "*",
-    "@deepseek-ai/dsh-client-runtime": "*",
-    "@deepseek-ai/dsh-client-ui-settings-plugins": "*",
-    "@deepseek-ai/dsh-settings": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*",
-    "@types/react": "~18.3.1",
-    "react": "^18.2.0",
-    "tsdown": "*"
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-client-connection": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.8",
+    "@deepseek-ai/schemastery": "3.18.1",
+    "@types/react": "18.3.1",
+    "react": "18.3.1",
+    "tsdown": "0.22.14"
   },
   "keywords": [
     "dsh-plugin",

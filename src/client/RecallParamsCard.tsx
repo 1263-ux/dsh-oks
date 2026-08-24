@@ -7,7 +7,7 @@
  * theme (light/dark) with zero CSS of our own.
  *
  * Groups: 知识库 / 召回 / PostToolUse / 搜索后端. Each field writes via
- * scope.set → Host half onChange syncs to ~/.oks/config.json + recall.yaml.
+ * scope.set → Host half onChange syncs through the OKS CLI.
  */
 import { useState, useSyncExternalStore, type ReactNode } from 'react'
 
@@ -116,7 +116,7 @@ export function RecallParamsCard(props: RecallParamsCardProps): ReactNode {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: T.labelPrimary }}>OKS 知识库配置</div>
           <div style={{ fontSize: 12, lineHeight: 1.45, color: T.labelSecondary }}>
-            {expanded ? '改 → 自动写 ~/.oks/config.json + settings/recall.yaml' : `当前：recall ${Number(v.recall_floor ?? 0.7)} · 每次 ${Number(v.recall_topn ?? 3)} 条`}
+            {expanded ? '改 → 自动同步到 OKS 配置' : `当前：recall ${Number(v.recall_floor ?? 0.7)} · 每次 ${Number(v.recall_topn ?? 3)} 条`}
           </div>
         </div>
         <span aria-hidden="true" style={{ flex: '0 0 auto', color: T.labelSecondary, fontSize: 16 }}>{expanded ? '⌃' : '⌄'}</span>

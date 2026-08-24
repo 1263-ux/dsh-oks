@@ -19,7 +19,8 @@ import { getRawBundle, listRawBundles } from './raw-browser.ts'
 import { getOksDiagnostics, getOksOverview } from './oks-overview.ts'
 import { isPrestepRecallEnabled } from './prestep-control.ts'
 import { resolveOksBin } from './oks-runtime.ts'
-import { clearOksKnowledgeBasePath, createDynamicSettingsHooks, parseOksKnowledgeBasePath, writeRecallYaml } from './oks-config.ts'
+import { clearOksKnowledgeBasePath, createDynamicSettingsHooks, parseOksKnowledgeBasePath } from './oks-config.ts'
+import { createOksVfs } from './oks-vfs.ts'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type { RpcResult } from '@deepseek-ai/dsh-client-connection'
@@ -54,8 +55,7 @@ export interface OksConfig {
   search_backend?: string
 }
 
-/** Schema for the settings card. knowledge_base_path writes ~/.oks/config.json
- * (via `oks config set`); the rest write settings/recall.yaml. */
+/** Schema for the settings card. Values are synchronized through the OKS CLI. */
 export const OksConfigSchema: z<OksConfig> = z.object({
   knowledge_base_path: z.string().default(''),
   recall_floor: z.number().min(0).max(1).step(0.05).default(0.7),
@@ -84,9 +84,7 @@ function warnSync(stage: string, error: unknown): void {
   console.warn(`[dsh-oks] ${stage} failed`, error)
 }
 
-/** Sync namespace values to OKS-owned stores: knowledge_base_path uses `oks config set`
- * (~/.oks/config.json); recall/posttool/search values use settings/recall.yaml.
- */
+/** Sync settings through the OKS CLI. DSH-only hook switches remain DSH settings. */
 async function syncOksConfig(cfg: OksConfig, changed: ReadonlySet<string>): Promise<void> {
   if (changed.has('knowledge_base_path')) {
     const knowledgeBasePath = cfg.knowledge_base_path?.trim() ?? ''
@@ -94,8 +92,9 @@ async function syncOksConfig(cfg: OksConfig, changed: ReadonlySet<string>): Prom
       if (knowledgeBasePath) {
         await execAsync(oksBin(), ['config', 'set', 'knowledge_base_path', knowledgeBasePath])
       } else {
-        // The CLI resolves an empty positional path to cwd, so disconnect by
-        // atomically clearing only the global config pointer instead.
+        // OKS 0.6.5 has no safe `config unset`; an empty positional path would
+        // resolve to cwd. Keep this narrow compatibility shim until OKS exposes
+        // an explicit unset operation.
         clearOksKnowledgeBasePath()
       }
     } catch (error) {
@@ -103,25 +102,16 @@ async function syncOksConfig(cfg: OksConfig, changed: ReadonlySet<string>): Prom
     }
   }
 
-  const recallChanged = new Set([...changed].filter(key => key !== 'knowledge_base_path'))
-  if (recallChanged.size === 0) return
-
-  // A path change is authoritative: an explicit empty value means disconnected
-  // and must not fall back to the previous global path. For ordinary recall
-  // changes, however, the Host may omit knowledge_base_path from its snapshot;
-  // use the existing OKS global pointer so recall.yaml still gets updated.
-  const pathChanged = changed.has('knowledge_base_path')
-  const kbPath = cfg.knowledge_base_path?.trim()
-    || (!pathChanged ? await readOksKnowledgeBasePath() : '')
-  if (!kbPath) {
-    console.warn('[dsh-oks] recall.yaml write skipped: knowledge base path is empty')
-    return
-  }
-
-  try {
-    writeRecallYaml(kbPath, cfg, recallChanged)
-  } catch (error) {
-    warnSync('recall.yaml write', error)
+  const cliKeys = new Set(['recall_floor', 'recall_topn', 'recall_minlen', 'recall_cooldown', 'posttool_floor', 'posttool_topn', 'posttool_mode', 'posttool_signal_rel_floor', 'search_backend'])
+  for (const key of changed) {
+    if (!cliKeys.has(key)) continue
+    const value = (cfg as Record<string, unknown>)[key]
+    if (value === undefined) continue
+    try {
+      await execAsync(oksBin(), ['config', 'set', key, String(value)])
+    } catch (error) {
+      warnSync(`OKS config set ${key}`, error)
+    }
   }
 }
 
@@ -359,6 +349,7 @@ function pushActivity(events: OksActivityEvent[], kind: string, label: string, d
 export function apply(ctx: Context, config: OksConfig = {}) {
   const activity: OksActivityEvent[] = []
   const traces: OksRecallTrace[] = []
+  const oksVfs = createOksVfs()
   const recordActivity = (kind: string, label: string, detail: string, status: OksActivityEvent['status'] = 'info', traceId?: string) => pushActivity(activity, kind, label, detail, status, traceId)
   const recordTrace = (phase: string, stdout: string, threshold?: number, status: OksRecallTrace['status'] = 'ok'): string => {
     const traceId = randomUUID().slice(0, 12)
@@ -380,9 +371,9 @@ export function apply(ctx: Context, config: OksConfig = {}) {
   installSettingsSection(ctx, OKS_NS, OksConfigSchema, config, settingsHooks)
 
   // Read-only Web lifecycle browser API; the client receives sanitized data only.
-  // Browser code calls /oks/wiki-list and /oks/wiki-get.  It never receives a
-  // local path, and a detail request is resolved only from files discovered
-  // underneath the configured <knowledge_base_path>/wiki root.
+  // Browser code calls /oks/wiki-list and /oks/wiki-get. Discovery and reads
+  // are delegated to the external OKS CLI VFS; the client never receives a
+  // local path.
   ctx.connection.rpc.handle('/oks', async (endpoint, payload): Promise<RpcResult<unknown>> => {
     const body = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
     const activeConfig = settingsHooks.getCurrent()
@@ -410,7 +401,7 @@ export function apply(ctx: Context, config: OksConfig = {}) {
         oksCliAvailable = false
       }
       try {
-        return { ok: true, value: await getOksDiagnostics(configuredPath, oksCliAvailable) }
+        return { ok: true, value: await getOksDiagnostics(configuredPath, oksCliAvailable, oksVfs) }
       } catch (error) {
         warnSync('OKS diagnostics', error)
         return {
@@ -437,48 +428,48 @@ export function apply(ctx: Context, config: OksConfig = {}) {
     }
     try {
       if (endpoint === 'overview') {
-        const value = await getOksOverview(configuredPath)
+        const value = await getOksOverview(oksVfs)
         return { ok: true, value }
       }
       if (endpoint === 'raw-list') {
-        const value = await listRawBundles(configuredPath, {
+        const value = await listRawBundles({
           query: typeof body.query === 'string' ? body.query : undefined,
           status: typeof body.status === 'string' ? body.status : undefined,
-        })
+        }, oksVfs)
         return { ok: true, value }
       }
       if (endpoint === 'raw-get') {
-        const value = await getRawBundle(configuredPath, body.id)
+        const value = await getRawBundle(body.id, oksVfs)
         if (!value) {
           return { ok: false, error: { code: 'internal', message: 'The requested Raw Bundle was not found.', details: {} } }
         }
         return { ok: true, value }
       }
       if (endpoint === 'draft-list') {
-        const value = await listDraftPages(configuredPath, {
+        const value = await listDraftPages({
           query: typeof body.query === 'string' ? body.query : undefined,
           area: typeof body.area === 'string' ? body.area : undefined,
           type: typeof body.type === 'string' ? body.type : undefined,
-        })
+        }, oksVfs)
         return { ok: true, value }
       }
       if (endpoint === 'draft-get') {
-        const value = await getDraftPage(configuredPath, body.slug)
+        const value = await getDraftPage(body.slug, oksVfs)
         if (!value) {
           return { ok: false, error: { code: 'internal', message: 'The requested Draft was not found.', details: {} } }
         }
         return { ok: true, value }
       }
       if (endpoint === 'wiki-list') {
-        const value = await listWikiPages(configuredPath, {
+        const value = await listWikiPages({
           query: typeof body.query === 'string' ? body.query : undefined,
           area: typeof body.area === 'string' ? body.area : undefined,
           type: typeof body.type === 'string' ? body.type : undefined,
-        })
+        }, oksVfs)
         return { ok: true, value }
       }
       if (endpoint === 'wiki-get') {
-        const value = await getWikiPage(configuredPath, body.slug)
+        const value = await getWikiPage(body.slug, oksVfs)
         if (!value) {
           return { ok: false, error: { code: 'internal', message: 'The requested Wiki page was not found.', details: {} } }
         }

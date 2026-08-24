@@ -1,6 +1,5 @@
-﻿/** Read-only, bounded inspection of the configured OKS instance. */
-import { readdir, stat } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+/** Read-only lifecycle diagnostics backed by the OKS CLI VFS. */
+import { defaultOksVfs, type OksVfsClient } from './oks-vfs.ts'
 import { listRawBundles } from './raw-browser.ts'
 
 export interface OksOverview {
@@ -36,138 +35,53 @@ export interface OksDiagnostics {
   truncated?: boolean
 }
 
-const MAX_SCAN_DIRECTORIES = 2_000
-const MAX_SCANNED_FILES = 1_000
-
-async function countFiles(root: string, include: (name: string) => boolean): Promise<{ count: number; truncated: boolean }> {
-  let count = 0
-  let scannedDirectories = 0
-  let scannedFiles = 0
-  let truncated = false
-  const pending = [resolve(root)]
-  while (pending.length > 0 && !truncated) {
-    const directory = pending.pop()!
-    scannedDirectories++
-    if (scannedDirectories > MAX_SCAN_DIRECTORIES) {
-      truncated = true
-      break
-    }
-    let entries
-    try { entries = await readdir(directory, { withFileTypes: true }) }
-    catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-      throw error
-    }
-    for (const entry of entries) {
-      if (entry.name === '.gitkeep') continue
-      const file = join(directory, entry.name)
-      if (entry.isDirectory()) {
-        if (scannedDirectories + pending.length < MAX_SCAN_DIRECTORIES) pending.push(file)
-        else truncated = true
-        continue
-      }
-      if (!entry.isFile()) continue
-      scannedFiles++
-      if (scannedFiles > MAX_SCANNED_FILES) {
-        truncated = true
-        break
-      }
-      if (include(entry.name)) count++
-    }
-  }
-  return { count, truncated }
-}
-
-async function isDirectory(path: string): Promise<boolean> {
-  try { return (await stat(path)).isDirectory() }
-  catch { return false }
-}
-
-/** Count the three lifecycle layers without exposing the local root path. */
-export async function getOksOverview(knowledgeBasePath: string): Promise<OksOverview> {
-  const [wiki, drafts, raw, rawBundles] = await Promise.all([
-    countFiles(join(knowledgeBasePath, 'wiki'), name => name.toLowerCase().endsWith('.md')),
-    countFiles(join(knowledgeBasePath, 'drafts'), name => name.toLowerCase().endsWith('.md')),
-    countFiles(join(knowledgeBasePath, 'raw'), () => true),
-    listRawBundles(knowledgeBasePath),
+async function lifecycleCounts(vfs: OksVfsClient): Promise<{ overview: OksOverview; wikiDirectory: boolean; draftsDirectory: boolean; rawDirectory: boolean }> {
+  const scopes = await Promise.allSettled([
+    vfs.tree('oks://wiki/', 10, 1_000),
+    vfs.tree('oks://drafts/', 10, 1_000),
+    vfs.tree('oks://raw/', 10, 10_000),
   ])
-  const truncated = wiki.truncated || drafts.truncated || raw.truncated || rawBundles.truncated
+  const wiki = scopes[0].status === 'fulfilled' ? scopes[0].value : undefined
+  const drafts = scopes[1].status === 'fulfilled' ? scopes[1].value : undefined
+  const raw = scopes[2].status === 'fulfilled' ? scopes[2].value : undefined
+  if (!wiki && !drafts && !raw) throw new Error('OKS VFS scopes are unavailable')
+  const rawBundles = await listRawBundles({}, vfs)
+  const wikiFiles = wiki?.entries.filter(entry => entry.type === 'file' && entry.name.toLowerCase().endsWith('.md')).length ?? 0
+  const draftFiles = drafts?.entries.filter(entry => entry.type === 'file' && entry.name.toLowerCase().endsWith('.md')).length ?? 0
+  const rawFiles = raw?.entries.filter(entry => entry.type === 'file' && entry.name !== '.gitkeep').length ?? 0
+  const truncated = Boolean(wiki?.truncated || drafts?.truncated || raw?.truncated || rawBundles.truncated)
   return {
-    connected: true,
-    wikiCount: wiki.count,
-    draftCount: drafts.count,
-    rawFileCount: raw.count,
-    rawBundleCount: rawBundles.total,
-    ...(truncated ? { truncated: true } : {}),
+    overview: { connected: true, wikiCount: wikiFiles, draftCount: draftFiles, rawFileCount: rawFiles, rawBundleCount: rawBundles.total, ...(truncated ? { truncated: true } : {}) },
+    wikiDirectory: Boolean(wiki),
+    draftsDirectory: Boolean(drafts),
+    rawDirectory: Boolean(raw),
   }
 }
 
-/**
- * Classify first-use connectivity without returning the user's local path.
- * The CLI availability is supplied by the Host because only the Host can run
- * the `oks` executable; this function remains deterministic and easy to test.
- */
-export async function getOksDiagnostics(knowledgeBasePath: string, oksCliAvailable: boolean): Promise<OksDiagnostics> {
-  const empty = {
-    wikiCount: 0,
-    draftCount: 0,
-    rawFileCount: 0,
-    rawBundleCount: 0,
-    wikiDirectory: false,
-    draftsDirectory: false,
-    rawDirectory: false,
-  }
-  if (!oksCliAvailable) {
+export async function getOksOverview(vfs: OksVfsClient = defaultOksVfs): Promise<OksOverview> {
+  return (await lifecycleCounts(vfs)).overview
+}
+
+/** Classify first-use connectivity without exposing the local root path. */
+export async function getOksDiagnostics(knowledgeBasePath: string, oksCliAvailable: boolean, vfs: OksVfsClient = defaultOksVfs): Promise<OksDiagnostics> {
+  const empty = { wikiCount: 0, draftCount: 0, rawFileCount: 0, rawBundleCount: 0, wikiDirectory: false, draftsDirectory: false, rawDirectory: false }
+  if (!oksCliAvailable) return { connected: false, status: 'oks-not-installed', message: '未检测到 OKS 命令。请先安装 OKS CLI，然后重新打开 DSH。', oksCliAvailable: false, knowledgeBaseConfigured: Boolean(knowledgeBasePath), ...empty }
+  if (!knowledgeBasePath) return { connected: false, status: 'not-configured', message: '已检测到 OKS，但还没有连接知识库。请在系统设置中配置知识库位置。', oksCliAvailable: true, knowledgeBaseConfigured: false, ...empty }
+  try {
+    const result = await lifecycleCounts(vfs)
+    const complete = result.wikiDirectory && result.draftsDirectory && result.rawDirectory
     return {
-      connected: false,
-      status: 'oks-not-installed',
-      message: '未检测到 OKS 命令。请先安装 OKS CLI，然后重新打开 DSH。',
-      oksCliAvailable: false,
-      knowledgeBaseConfigured: Boolean(knowledgeBasePath),
-      ...empty,
-    }
-  }
-  if (!knowledgeBasePath) {
-    return {
-      connected: false,
-      status: 'not-configured',
-      message: '已检测到 OKS，但还没有连接知识库。请在系统设置中配置知识库位置。',
-      oksCliAvailable: true,
-      knowledgeBaseConfigured: false,
-      ...empty,
-    }
-  }
-  const root = resolve(knowledgeBasePath)
-  let rootExists = false
-  try { rootExists = (await stat(root)).isDirectory() } catch { rootExists = false }
-  if (!rootExists) {
-    return {
-      connected: false,
-      status: 'not-initialized',
-      message: 'OKS 知识库位置已配置，但目录不存在。请先运行 oks init 创建知识库。',
+      ...result.overview,
+      connected: complete,
+      status: complete ? 'connected' : 'partial',
+      message: complete ? 'OKS 知识库已连接。' : '已找到 OKS 知识库目录，但目录结构不完整；请运行 oks init --upgrade 修复。',
       oksCliAvailable: true,
       knowledgeBaseConfigured: true,
-      ...empty,
+      wikiDirectory: result.wikiDirectory,
+      draftsDirectory: result.draftsDirectory,
+      rawDirectory: result.rawDirectory,
     }
-  }
-  const [wikiDirectory, draftsDirectory, rawDirectory] = await Promise.all([
-    isDirectory(join(root, 'wiki')),
-    isDirectory(join(root, 'drafts')),
-    isDirectory(join(root, 'raw')),
-  ])
-  const overview = await getOksOverview(root)
-  const complete = wikiDirectory && draftsDirectory && rawDirectory
-  return {
-    ...overview,
-    connected: complete,
-    status: complete ? 'connected' : 'partial',
-    message: complete
-      ? 'OKS 知识库已连接。'
-      : '已找到 OKS 知识库目录，但目录结构不完整；请运行 oks init --upgrade 修复。',
-    oksCliAvailable: true,
-    knowledgeBaseConfigured: true,
-    wikiDirectory,
-    draftsDirectory,
-    rawDirectory,
+  } catch {
+    return { connected: false, status: 'read-error', message: '无法通过 OKS CLI 读取知识库。', oksCliAvailable: true, knowledgeBaseConfigured: true, ...empty }
   }
 }

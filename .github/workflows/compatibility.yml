@@ -3,6 +3,9 @@ name: dsh-oks compatibility
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
 
 jobs:
   verify:
@@ -16,22 +19,50 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      - run: npm install --ignore-scripts --legacy-peer-deps
-      - run: npm test
-      - run: npm run build
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm test
+      - run: pnpm run build
       - run: node --check lib/index.mjs
       - run: node --check lib/client.js
-      - run: npm run verify:pack
+      - run: pnpm run verify:entry
+      - run: pnpm run verify:pack
 
   dsh-rc8-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22.x, 24.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm test
+      - run: pnpm run build
+      - run: pnpm run verify:entry
+      - run: pnpm run verify:pack
+      - run: node scripts/dsh-rc8-smoke.mjs
+
+  latest-dsh-smoke:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22.x
-      - run: npm install --ignore-scripts --legacy-peer-deps
-      - run: npm test
-      - run: npm run build
-      - run: npm run verify:pack
-      - run: node scripts/dsh-rc8-smoke.mjs
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: node scripts/dsh-latest-smoke.mjs

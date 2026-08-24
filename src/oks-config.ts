@@ -255,8 +255,11 @@ function patchRecallYaml(existing: string, cfg: RecallConfig, changed: ReadonlyS
   return lines.join('\n') + '\n'
 }
 
-/** Atomically patch settings/recall.yaml while preserving unknown sections,
- * keys, comments, and user-owned values. Missing files get the full template. */
+/**
+ * Legacy compatibility helper retained for older embedders and migration tests.
+ * Production settings synchronization no longer calls this function; the Host
+ * routes supported values through `oks config set` instead.
+ */
 export function writeRecallYaml(kbPath: string, cfg: RecallConfig, changed?: ReadonlySet<string>): void {
   const dir = join(kbPath, 'settings')
   const target = join(dir, 'recall.yaml')
