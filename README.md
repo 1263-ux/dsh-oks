@@ -51,6 +51,8 @@ DSH Web，让它重新扫描插件的 browser bundle。
 
 ## Web 面板与数据边界
 
+DSH 只负责设置、工具和浏览器 UI；知识库发现、搜索、路径校验和内容读取均由
+`oks fs ... --format json` 提供，插件不会把 CLI 或知识库搜索实现搬进 DSH。
 面板显示的数量和内容直接来自已配置的本地 OKS 文件：
 
 | 区域 | 读取内容 |
@@ -81,6 +83,12 @@ DSH Web，让它重新扫描插件的 browser bundle。
 3. `oks_status` 与 `oks_recall` 能获得非异常结果；
 4. 修改设置后，OKS 配置写回并在刷新后仍然生效；
 5. Wiki、Draft 和 Raw 页面展示的是当前本地知识库数据。
+
+仓库 CI 的阻塞基线固定在 DSH `0.1.0-rc.8`，使用 `pnpm-lock.yaml` 保证复现；这
+不是生产运行时的永久 pin。运行时 peer 仍保留兼容范围，另有手动/每周执行的
+latest DSH 冒烟轨道，用于发现上游变化而不让上游更新破坏基线构建；latest 轨道
+是 advisory，不作为 PR 合并阻塞门禁。rc.8 的真实插件安装冒烟在 Node 22 和 24
+均执行，Node 22/24 的基础测试、构建和入口检查也都执行。
 
 ## 开发与发布边界
 

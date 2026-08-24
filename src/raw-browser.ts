@@ -1,6 +1,10 @@
-﻿/** Read-only browser for OKS Raw Bundle v0.2 evidence. */
-import { open, readdir } from 'node:fs/promises'
-import { join, relative, resolve, sep } from 'node:path'
+/**
+ * Read-only Raw Bundle presentation helpers.
+ *
+ * The OKS CLI VFS owns bundle discovery and file reads. This module only
+ * groups bounded VFS entries into the existing browser DTO.
+ */
+import { defaultOksVfs, decodeOksPath, isOksUriUnder, parentOksUri, type OksFsEntry, type OksVfsClient } from './oks-vfs.ts'
 
 export interface RawListFilters { query?: string; status?: string }
 export interface RawBundleSummary {
@@ -24,41 +28,26 @@ export interface RawListResult {
   truncated: boolean
 }
 
+const RAW_SCOPE = 'oks://raw/'
 const MAX_QUERY_CHARS = 120
 const MAX_DETAIL_BODY_CHARS = 60_000
-const MAX_LIST_PREVIEW_BYTES = 16 * 1024
-const MAX_DETAIL_BODY_BYTES = 128 * 1024
-const MAX_MANIFEST_BYTES = 256 * 1024
-const MAX_BUNDLE_DIRECTORIES = 250
-const MAX_RAW_SCAN_DIRECTORIES = 10_000
-const MAX_FILES_PER_BUNDLE = 2_000
+const MAX_LIST_PREVIEW_CHARS = 16 * 1024
+const MAX_DETAIL_BODY_CHARS_READ = 128 * 1024
+const MAX_MANIFEST_CHARS = 256 * 1024
+const MAX_TREE_ENTRIES = 10_000
+const MAX_BUNDLES = 250
 
-interface ScanResult { files: string[]; truncated: boolean }
-interface BundleDirectories { directories: string[]; truncated: boolean }
-interface ReadBundleResult {
+interface BundleRecord {
   summary: RawBundleSummary
   manifest: Record<string, unknown>
   files: string[]
-  directory: string
+  directoryUri: string
+  contentUri?: string
+  contentTruncated: boolean
 }
 
 function text(value: unknown): string { return typeof value === 'string' ? value.trim() : '' }
 function normalizeFilter(value: unknown): string { return text(value).slice(0, MAX_QUERY_CHARS) }
-function relativeId(root: string, directory: string): string { return relative(root, directory).split(sep).join('/') }
-
-async function readTextPreview(path: string, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
-  const handle = await open(path, 'r')
-  try {
-    const stat = await handle.stat()
-    const bytes = Math.min(stat.size, maxBytes)
-    const buffer = Buffer.alloc(bytes)
-    if (bytes > 0) await handle.read(buffer, 0, bytes, 0)
-    return { text: buffer.toString('utf8'), truncated: stat.size > maxBytes }
-  } finally {
-    await handle.close()
-  }
-}
-
 function displaySummary(markdown: string): string {
   const plain = markdown
     .replace(/```[\s\S]*?```/g, ' ')
@@ -70,7 +59,6 @@ function displaySummary(markdown: string): string {
     .trim()
   return plain.length <= 220 ? plain : `${plain.slice(0, 217).trimEnd()}...`
 }
-
 function dateFromId(id: string, manifest: Record<string, unknown>): string {
   const match = /(^|\/)(\d{4})\/(\d{2})\/(\d{2})(\/|$)/.exec(id)
   if (match) return `${match[2]}-${match[3]}-${match[4]}`
@@ -81,7 +69,6 @@ function dateFromId(id: string, manifest: Record<string, unknown>): string {
   }
   return ''
 }
-
 function sourceTypeFromManifest(manifest: Record<string, unknown>): string {
   const sources = manifest.sources
   if (Array.isArray(sources)) {
@@ -93,140 +80,119 @@ function sourceTypeFromManifest(manifest: Record<string, unknown>): string {
   }
   return 'unlabeled'
 }
-
-async function filesUnder(directory: string): Promise<ScanResult> {
-  const out: string[] = []
-  const pending = [directory]
-  let truncated = false
-  while (pending.length > 0 && !truncated) {
-    const current = pending.pop()!
-    let entries
-    try {
-      entries = await readdir(current, { withFileTypes: true })
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-      throw error
-    }
-    for (const entry of entries) {
-      if (entry.name === '.gitkeep') continue
-      const file = join(current, entry.name)
-      if (entry.isDirectory()) {
-        pending.push(file)
-      } else if (entry.isFile()) {
-        out.push(relative(directory, file).split(sep).join('/'))
-        if (out.length >= MAX_FILES_PER_BUNDLE) {
-          truncated = true
-          break
-        }
-      }
-    }
-  }
-  return { files: out.sort((a, b) => a.localeCompare(b)), truncated }
+function relativeId(directoryUri: string): string {
+  return decodeOksPath(directoryUri, 'raw') ?? ''
 }
-
-async function findBundleDirectories(rawRoot: string): Promise<BundleDirectories> {
-  const directories: string[] = []
-  const pending = [resolve(rawRoot)]
-  let scannedDirectories = 0
-  let truncated = false
-  while (pending.length > 0 && !truncated) {
-    const current = pending.pop()!
-    scannedDirectories += 1
-    if (scannedDirectories > MAX_RAW_SCAN_DIRECTORIES) {
-      truncated = true
-      break
-    }
-    let entries
-    try {
-      entries = await readdir(current, { withFileTypes: true })
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-      throw error
-    }
-    if (entries.some(entry => entry.isFile() && entry.name.toLowerCase() === 'bundle.json')) {
-      directories.push(current)
-      if (directories.length >= MAX_BUNDLE_DIRECTORIES) {
-        truncated = true
-        break
-      }
-      continue
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) pending.push(join(current, entry.name))
-    }
-  }
-  return { directories: directories.sort((a, b) => relativeId(rawRoot, a).localeCompare(relativeId(rawRoot, b))), truncated }
+function relativeFilePath(directoryUri: string, fileUri: string): string | undefined {
+  const directory = relativeId(directoryUri)
+  const file = decodeOksPath(fileUri, 'raw')
+  if (!file || !directory || !file.startsWith(`${directory}/`)) return undefined
+  return file.slice(directory.length + 1)
 }
-
-function requestedContentPath(directory: string, manifest: Record<string, unknown>, files: string[]): string | undefined {
+function findContentUri(directoryUri: string, manifest: Record<string, unknown>, files: Map<string, string>): string | undefined {
   const declared = text((manifest.files as Record<string, unknown> | undefined)?.content)
-  if (declared && !declared.includes('..') && !declared.includes('\\') && files.includes(declared)) return join(directory, declared)
-  if (files.includes('content.md')) return join(directory, 'content.md')
-  if (files.includes('raw.md')) return join(directory, 'raw.md')
-  return undefined
+  if (declared && !declared.includes('..') && !declared.includes('\\')) return files.get(declared)
+  return files.get('content.md') ?? files.get('raw.md')
+}
+function rawFileEntries(entries: OksFsEntry[], directoryUri: string): Map<string, string> {
+  const files = new Map<string, string>()
+  for (const entry of entries) {
+    if (entry.type !== 'file' || !isOksUriUnder(entry.uri, directoryUri)) continue
+    const relative = relativeFilePath(directoryUri, entry.uri)
+    if (relative) files.set(relative, entry.uri)
+  }
+  return files
+}
+function bundleDirectories(entries: OksFsEntry[]): { directories: string[]; truncated: boolean } {
+  const roots = entries
+    .filter(entry => entry.type === 'file' && entry.name.toLowerCase() === 'bundle.json')
+    .map(entry => parentOksUri(entry.uri))
+    .filter((uri): uri is string => Boolean(uri))
+  const directories = [...new Set(roots)]
+  return { directories: directories.slice(0, MAX_BUNDLES), truncated: directories.length > MAX_BUNDLES }
 }
 
-async function readBundle(rawRoot: string, directory: string): Promise<ReadBundleResult | undefined> {
+async function readBundle(directoryUri: string, entries: OksFsEntry[], vfs: OksVfsClient): Promise<BundleRecord | undefined> {
+  const manifestUri = entries.find(entry => entry.type === 'file' && entry.name.toLowerCase() === 'bundle.json' && parentOksUri(entry.uri) === directoryUri)?.uri
+  if (!manifestUri) return undefined
   try {
-    const manifestPreview = await readTextPreview(join(directory, 'bundle.json'), MAX_MANIFEST_BYTES)
-    if (manifestPreview.truncated) return undefined
-    const manifest = JSON.parse(manifestPreview.text) as Record<string, unknown>
-    const id = relativeId(rawRoot, directory)
+    const manifestRead = await vfs.read(manifestUri, MAX_MANIFEST_CHARS)
+    if (manifestRead.truncated) return undefined
+    const manifest = JSON.parse(manifestRead.content) as Record<string, unknown>
+    const files = rawFileEntries(entries, directoryUri)
+    const contentUri = findContentUri(directoryUri, manifest, files)
+    const content = contentUri ? await vfs.read(contentUri, MAX_LIST_PREVIEW_CHARS) : { content: '', truncated: false }
+    const id = relativeId(directoryUri)
     const bundleId = text(manifest.bundle_id) || id
     const captureId = text(manifest.capture_id) || bundleId
     const status = text(manifest.processing_status) || 'unknown'
-    const fileScan = await filesUnder(directory)
-    const bodyPath = requestedContentPath(directory, manifest, fileScan.files)
-    const body = bodyPath ? (await readTextPreview(bodyPath, MAX_LIST_PREVIEW_BYTES)).text : ''
-    const fileCount = fileScan.truncated ? MAX_FILES_PER_BUNDLE : fileScan.files.length
-    const summary: RawBundleSummary = {
-      id,
-      bundleId,
-      captureId,
-      capturedAt: dateFromId(id, manifest),
-      status,
-      sourceType: sourceTypeFromManifest(manifest),
-      fileCount,
-      summary: displaySummary(body) || 'This Raw Bundle has no previewable text.',
+    return {
+      summary: {
+        id,
+        bundleId,
+        captureId,
+        capturedAt: dateFromId(id, manifest),
+        status,
+        sourceType: sourceTypeFromManifest(manifest),
+        fileCount: files.size,
+        summary: displaySummary(content.content) || 'This Raw Bundle has no previewable text.',
+      },
+      manifest,
+      files: [...files.keys()].sort((a, b) => a.localeCompare(b)),
+      directoryUri,
+      contentUri,
+      contentTruncated: content.truncated,
     }
-    return { summary, manifest, files: fileScan.files, directory }
   } catch {
     return undefined
   }
 }
 
-export async function listRawBundles(knowledgeBasePath: string, filters: RawListFilters = {}): Promise<RawListResult> {
-  const rawRoot = resolve(knowledgeBasePath, 'raw')
-  const found = await findBundleDirectories(rawRoot)
-  const bundles: ReadBundleResult[] = []
-  for (const directory of found.directories) {
-    const bundle = await readBundle(rawRoot, directory)
+async function loadBundles(query: string, vfs: OksVfsClient): Promise<{ bundles: BundleRecord[]; truncated: boolean }> {
+  const tree = await vfs.tree(RAW_SCOPE, 10, MAX_TREE_ENTRIES)
+  let candidateUris: Set<string> | undefined
+  let truncated = tree.truncated
+  if (query) {
+    const found = await vfs.find(query, RAW_SCOPE, 200)
+    candidateUris = new Set(found.matches.map(match => match.uri))
+    truncated ||= found.truncated
+  }
+  const bundles: BundleRecord[] = []
+  const bundleRoots = bundleDirectories(tree.entries)
+  truncated ||= bundleRoots.truncated
+  for (const directoryUri of bundleRoots.directories) {
+    if (candidateUris && ![...candidateUris].some(uri => isOksUriUnder(uri, directoryUri))) continue
+    const bundle = await readBundle(directoryUri, tree.entries, vfs)
     if (bundle) bundles.push(bundle)
   }
   bundles.sort((a, b) => b.summary.capturedAt.localeCompare(a.summary.capturedAt) || a.summary.captureId.localeCompare(b.summary.captureId))
+  return { bundles, truncated }
+}
+
+export async function listRawBundles(filters: RawListFilters = {}, vfs: OksVfsClient = defaultOksVfs): Promise<RawListResult> {
   const query = normalizeFilter(filters.query).toLocaleLowerCase()
   const status = normalizeFilter(filters.status)
-  const items = bundles
-    .map(item => item.summary)
-    .filter(item => (!query || `${item.captureId}\n${item.bundleId}\n${item.sourceType}\n${item.status}\n${item.summary}`.toLocaleLowerCase().includes(query)) && (!status || item.status === status))
-  return { total: bundles.length, items, statuses: [...new Set(bundles.map(item => item.summary.status))].sort((a, b) => a.localeCompare(b)), truncated: found.truncated }
+  const loaded = await loadBundles(query, vfs)
+  const items = loaded.bundles.map(item => item.summary).filter(item => !status || item.status === status)
+  return {
+    total: loaded.bundles.length,
+    items,
+    statuses: [...new Set(loaded.bundles.map(item => item.summary.status))].sort((a, b) => a.localeCompare(b)),
+    truncated: loaded.truncated,
+  }
 }
 
-export async function getRawBundle(knowledgeBasePath: string, requestedId: unknown): Promise<RawBundleDetail | undefined> {
+export async function getRawBundle(requestedId: unknown, vfs: OksVfsClient = defaultOksVfs): Promise<RawBundleDetail | undefined> {
   const id = normalizeFilter(requestedId)
   if (!id || id.includes('\\') || id.split('/').some(part => !part || part === '.' || part === '..')) return undefined
-  const rawRoot = resolve(knowledgeBasePath, 'raw')
-  const found = await findBundleDirectories(rawRoot)
-  const directory = found.directories.find(candidate => relativeId(rawRoot, candidate) === id)
-  if (!directory) return undefined
-  const item = await readBundle(rawRoot, directory)
-  if (!item) return undefined
-  const bodyPath = requestedContentPath(directory, item.manifest, item.files)
-  const preview = bodyPath ? await readTextPreview(bodyPath, MAX_DETAIL_BODY_BYTES) : { text: '', truncated: false }
-  const body = preview.text.slice(0, MAX_DETAIL_BODY_CHARS)
-  return { ...item.summary, body, bodyTruncated: preview.truncated || preview.text.length > MAX_DETAIL_BODY_CHARS }
+  const loaded = await loadBundles('', vfs)
+  const bundle = loaded.bundles.find(item => item.summary.id === id)
+  if (!bundle) return undefined
+  const read = bundle.contentUri ? await vfs.read(bundle.contentUri, MAX_DETAIL_BODY_CHARS_READ) : { content: '', truncated: false }
+  const body = read.content.slice(0, MAX_DETAIL_BODY_CHARS)
+  return { ...bundle.summary, body, bodyTruncated: bundle.contentTruncated || read.truncated || read.content.length > MAX_DETAIL_BODY_CHARS }
 }
 
-export async function countRawBundles(knowledgeBasePath: string): Promise<number> {
-  return (await listRawBundles(knowledgeBasePath)).total
+export async function countRawBundles(vfs: OksVfsClient = defaultOksVfs): Promise<number> {
+  return (await listRawBundles({}, vfs)).total
 }
