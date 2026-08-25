@@ -19,6 +19,7 @@ const pnpmCli = join(
   'bin',
   'pnpm.mjs',
 )
+const pnpmCommand = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 const tempRoot = await mkdtemp(join(tmpdir(), 'dsh-oks-rc8-'))
 const runtimeRoot = join(tempRoot, 'runtime')
 const artifactRoot = join(tempRoot, 'artifact')
@@ -54,8 +55,8 @@ async function run(command, args, cwd, runEnv = env, timeout = 30_000) {
 }
 
 async function runNpm(args, cwd, runEnv = env) {
-  if (!existsSync(pnpmCli)) throw new Error(`Bundled pnpm is unavailable: ${pnpmCli}`)
-  return run(runtimeNode, [pnpmCli, ...args], cwd, runEnv, installTimeoutMs)
+  if (existsSync(pnpmCli)) return run(runtimeNode, [pnpmCli, ...args], cwd, runEnv, installTimeoutMs)
+  return run(pnpmCommand, args, cwd, runEnv, installTimeoutMs)
 }
 
 async function runDsh(dsh, args, cwd, runEnv = env, timeout = 30_000) {
