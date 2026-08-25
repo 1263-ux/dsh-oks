@@ -31,7 +31,7 @@ const rc8BuildPolicy = {
   'node-pty': true,
   protobufjs: true,
 }
-const winX64OptionalDependencies = 'supportedArchitectures:\n  os:\n    - win32\n  cpu:\n    - x64\n'
+const hostOptionalDependencies = `supportedArchitectures:\n  os:\n    - ${process.platform}\n  cpu:\n    - ${process.arch}\n`
 await Promise.all([mkdir(runtimeRoot, { recursive: true }), mkdir(artifactRoot), mkdir(dshHome)])
 
 function cleanPath(value) {
@@ -129,7 +129,7 @@ try {
   await writeFile(join(runtimeRoot, 'package.json'), JSON.stringify({
     private: true,
   }) + '\n', 'utf8')
-  await writeFile(join(runtimeRoot, 'pnpm-workspace.yaml'), `${winX64OptionalDependencies}allowBuilds:\n${Object.entries(rc8BuildPolicy).map(([name, allowed]) => `  ${JSON.stringify(name)}: ${allowed}`).join('\n')}\n`, 'utf8')
+  await writeFile(join(runtimeRoot, 'pnpm-workspace.yaml'), `${hostOptionalDependencies}allowBuilds:\n${Object.entries(rc8BuildPolicy).map(([name, allowed]) => `  ${JSON.stringify(name)}: ${allowed}`).join('\n')}\n`, 'utf8')
   console.error('[dsh-rc8-smoke] install isolated DSH rc.8 runtime')
   await runNpm(['add', '--reporter=append-only', '@deepseek-ai/dsh@0.1.0-rc.8', 'pnpm@10.12.4'], runtimeRoot)
   console.error('[dsh-rc8-smoke] pack dsh-oks')
