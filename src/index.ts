@@ -20,6 +20,8 @@ import { getOksDiagnostics, getOksOverview } from './oks-overview.ts'
 import { isPrestepRecallEnabled } from './prestep-control.ts'
 import { resolveOksBin } from './oks-runtime.ts'
 import { clearOksKnowledgeBasePath, createDynamicSettingsHooks, parseOksKnowledgeBasePath } from './oks-config.ts'
+import { mergeOksRecallTraceHistory, parseOksHookHistory, parseOksHookRecall, toOksRecallTrace } from './oks-hook.ts'
+import type { OksRecallTrace } from './oks-hook.ts'
 import { createOksVfs } from './oks-vfs.ts'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
@@ -46,8 +48,6 @@ export interface OksConfig {
   recall_minlen?: number
   recall_cooldown?: number
   prestep_enabled?: boolean
-  prestep_floor?: number
-  prestep_knowledge_only?: boolean
   posttool_mode?: string
   posttool_floor?: number
   posttool_topn?: number
@@ -63,10 +63,6 @@ export const OksConfigSchema: z<OksConfig> = z.object({
   recall_minlen: z.number().step(1).min(1).max(50).default(6),
   recall_cooldown: z.number().step(1).min(0).max(100).default(10),
   prestep_enabled: z.boolean().default(true),
-  // pre-step hook uses a higher floor + knowledge-only to avoid noisy recall
-  // on every casual greeting (the deterministic-injection path is stricter).
-  prestep_floor: z.number().min(0).max(1).step(0.05).default(0.85),
-  prestep_knowledge_only: z.boolean().default(true),
   posttool_mode: z.union(['signal', 'full']).default('signal'),
   posttool_floor: z.number().min(0).max(1).step(0.05).default(0.9),
   posttool_topn: z.number().step(1).min(1).max(10).default(2),
@@ -292,17 +288,6 @@ function deriveQuery(exec: ToolExecution): string {
   return `${exec.name} ${args}`.slice(0, 200)
 }
 
-interface OksRecallTrace {
-  id: string
-  at: string
-  phase: string
-  status: 'ok' | 'info' | 'empty' | 'error'
-  candidateCount: number
-  matches: string[]
-  topRelevance?: number
-  threshold?: number
-}
-
 /** Extract UI-safe recall facts without exposing prompts, snippets, or paths. */
 function parseRecallStats(stdout: string): { candidateCount: number; matches: string[]; topRelevance?: number } {
   try {
@@ -363,6 +348,13 @@ export function apply(ctx: Context, config: OksConfig = {}) {
     if (trace) trace.status = status
     return trace
   }
+  const recordHookTrace = (result: NonNullable<ReturnType<typeof parseOksHookRecall>>): string => {
+    const traceId = randomUUID().slice(0, 12)
+    traces.unshift(toOksRecallTrace(traceId, new Date().toISOString(), result))
+    if (traces.length > 50) traces.length = 50
+    return traceId
+  }
+  const hookScopeArgs = () => ['--session-id', 'dsh-oks', '--cwd', process.cwd(), '--agent-id', 'dsh-oks']
   // Settings namespace (Host half) pairs with the browser RecallParamsCard.
   const settingsHooks = createDynamicSettingsHooks(config, async (cfg, changed) => {
     await syncOksConfig(cfg, changed)
@@ -386,7 +378,15 @@ export function apply(ctx: Context, config: OksConfig = {}) {
     if (endpoint === 'recall-trace') {
       const requested = typeof body.limit === 'number' && Number.isFinite(body.limit) ? Math.floor(body.limit) : 12
       const limit = Math.max(1, Math.min(20, requested))
-      return { ok: true, value: { items: traces.slice(0, limit), truncated: traces.length > limit } }
+      let retained: OksRecallTrace[] = []
+      try {
+        const out = await runOks(['hook', 'history', '--format', 'json', '--limit', String(limit), '--session-id', 'dsh-oks', '--cwd', process.cwd()])
+        retained = parseOksHookHistory(out)
+      } catch {
+        // Current-turn traces remain useful when retained history is unavailable.
+      }
+      const history = mergeOksRecallTraceHistory(traces, retained, limit)
+      return { ok: true, value: history }
     }
     const endpointLabels: Record<string, string> = {
       diagnostics: '读取连接诊断', overview: '读取知识库概览', 'wiki-list': '浏览 Wiki 知识', 'wiki-get': '打开 Wiki 详情',
@@ -624,7 +624,7 @@ export function apply(ctx: Context, config: OksConfig = {}) {
     description:
       'Show OKS injection-quality stats: total feedback count, useful/noise/' +
       'irrelevant breakdown, and per-slug ratings. Use to decide whether to ' +
-      'raise prestep_floor (more noise) or lower it (missed useful).',
+      'adjust the OKS recall floor (more noise vs. missed useful context).',
     parameters: {},
     output: {
       schema: { type: 'string' },
@@ -675,28 +675,35 @@ export function apply(ctx: Context, config: OksConfig = {}) {
     },
   }))
 
-  // Hook: agent/pre-step -- deterministic per-turn recall (UserPromptSubmit).
-  // DELEGATE then prepend: a later listener may still reject; we only attach
-  // Short queries and OKS failures are no-ops.
-  // Higher floor (0.85) + knowledge-only to avoid noisy recall on greetings.
+  // Hook: agent/pre-step -- delegate policy, cooldown, and retained history to OKS.
+  // DSH only passes the prompt through and prepends the already-rendered OKS context.
   ctx.on('agent/pre-step', async ({ messages }, next): Promise<PreStepDecision> => {
     const activeConfig = settingsHooks.getCurrent()
     if (!isPrestepRecallEnabled(activeConfig)) return next()
     const query = extractQuery(messages)
-    if (query.length < 10) return next()
-    const args = ['recall', query, '--format', 'json', '--limit', '2', '--floor', String(activeConfig.prestep_floor ?? 0.85)]
-    if (activeConfig.prestep_knowledge_only ?? true) args.push('--knowledge-only')
-    let out = ''
-    try { out = await runOks(args) }
-    catch { const traceId = recordTrace('pre-step', '', activeConfig.prestep_floor ?? 0.85, 'error'); recordActivity('prestep', 'Pre-step 召回失败', 'OKS CLI 未返回可用结果', 'error', traceId); return next() }
-    const traceId = recordTrace('pre-step', out, activeConfig.prestep_floor ?? 0.85)
-    const recalled = parseRecall(out)
-    if (!recalled) { const trace = updateTrace(traceId, 'empty'); recordActivity('prestep', 'Pre-step 召回', `未命中可注入的知识（${trace?.candidateCount ?? 0} 个候选）`, 'info', traceId); return next() }
-    const trace = updateTrace(traceId, 'ok')
-    recordActivity('prestep', 'Pre-step 召回', `已生成脱敏上下文注入（${trace?.candidateCount ?? 0} 个候选）`, 'ok', traceId)
+    let recalled = null
+    try { recalled = parseOksHookRecall(await runOks(['hook', 'recall', query, '--format', 'json', ...hookScopeArgs()])) }
+    catch { recalled = null }
+    if (!recalled) {
+      const traceId = recordTrace('pre-step', '', undefined, 'error')
+      recordActivity('prestep', 'Pre-step 召回失败', 'OKS Hook CLI 未返回有效结果', 'error', traceId)
+      return next()
+    }
+    const traceId = recordHookTrace(recalled)
+    if (recalled.status !== 'injected' || !recalled.context) {
+      const trace = traces.find(item => item.id === traceId)
+      const detail = recalled.status === 'skipped_minlen' ? 'OKS 按最短问题长度跳过召回'
+        : recalled.status === 'skipped_cooldown' ? 'OKS 按冷却策略跳过重复注入'
+          : recalled.status === 'error' ? 'OKS Hook 召回失败'
+            : `OKS 未命中可注入的知识（${trace?.candidateCount ?? 0} 个候选）`
+      recordActivity('prestep', 'Pre-step 召回', detail, recalled.status === 'error' ? 'error' : 'info', traceId)
+      return next()
+    }
+    const trace = traces.find(item => item.id === traceId)
+    recordActivity('prestep', 'Pre-step 召回', `已由 OKS 生成上下文注入（${trace?.candidateCount ?? 0} 个候选）`, 'ok', traceId)
     const downstream = await next()
     if (downstream.kind !== 'enter') return downstream
-    return { kind: 'enter', messages: [...downstream.messages, contextMessage(recalled.text)] }
+    return { kind: 'enter', messages: [...downstream.messages, contextMessage(recalled.context)] }
   })
 
   // Hook: tools/post-execute -- post-tool memory signal (PostToolUse).

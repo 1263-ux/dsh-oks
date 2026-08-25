@@ -31,7 +31,6 @@ const FALLBACK = {
   knowledge_base_path: '',
   recall_floor: 0.7, recall_topn: 3, recall_minlen: 6, recall_cooldown: 10,
   prestep_enabled: true,
-  prestep_floor: 0.85, prestep_knowledge_only: true,
   posttool_mode: 'signal', posttool_floor: 0.9, posttool_topn: 2, posttool_signal_rel_floor: 2.5,
   search_backend: 'native',
 }
@@ -168,21 +167,12 @@ export function RecallParamsCard(props: RecallParamsCardProps): ReactNode {
           {/* ⚡ pre-step hook（确定性每轮注入） */}
           <div style={group}>
             <div style={groupTitle}>⚡ pre-step hook（确定性每轮注入）</div>
-            <Field id={gid('pe')} lab="自动召回" h="开启后，每轮回答前自动召回相关 Wiki；关闭后仍可手动调用 oks_recall。">
+            <Field id={gid('pe')} lab="自动召回" h="开启后，每轮回答前由 OKS 依据知识库的召回参数执行；关闭后仍可手动调用 oks_recall。">
               <button id={gid('pe')} type="button" role="switch" aria-checked={Boolean(v.prestep_enabled ?? true)}
                 onClick={() => up('prestep_enabled', !Boolean(v.prestep_enabled ?? true))}
                 style={{ alignSelf: 'flex-start', minWidth: 68, border: 0, borderRadius: 999, padding: '7px 11px', background: Boolean(v.prestep_enabled ?? true) ? T.brand : T.border, color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                 {Boolean(v.prestep_enabled ?? true) ? '已开启' : '已关闭'}
               </button>
-            </Field>
-            <Field id={gid('pf')} lab="前置召回门槛" h="前置步骤使用更高门槛，过滤噪音（默认 0.85）">
-              <input id={gid('pf')} style={input} type="number" step="0.05" min="0" max="1"
-                value={Number(v.prestep_floor ?? 0.85)}
-                onChange={(e) => up('prestep_floor', parseFloat(e.target.value))} />
-            </Field>
-            <Field id={gid('pk')} lab="仅注入 Wiki" h="只注入 Wiki，不注入原始资料（episodic Raw）">
-              <input id={gid('pk')} type="checkbox" checked={Boolean(v.prestep_knowledge_only ?? true)}
-                onChange={(e) => up('prestep_knowledge_only', e.target.checked)} />
             </Field>
           </div>
 
