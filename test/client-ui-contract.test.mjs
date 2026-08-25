@@ -62,7 +62,9 @@ test('client UI keeps Chinese navigation and safe settings bindings', async () =
   assert.ok(browser.includes('此内容没有可预览的文本。'))
   assert.ok(browser.includes('证据包：'))
 
-  for (const key of ['knowledge_base_path', 'recall_floor', 'recall_topn', 'prestep_floor', 'posttool_mode', 'search_backend']) {
+  for (const key of ['knowledge_base_path', 'recall_floor', 'recall_topn', 'posttool_mode', 'search_backend']) {
     assert.ok(params.includes(`v.${key}`) || params.includes(`up('${key}'`) || params.includes(`String(v.${key})`))
   }
+  assert.equal(params.includes('prestep_floor'), false)
+  assert.equal(params.includes('prestep_knowledge_only'), false)
 })
