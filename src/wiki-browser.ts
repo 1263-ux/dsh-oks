@@ -5,7 +5,7 @@
  * OKS CLI VFS. This module only turns bounded CLI documents into the stable
  * DTO consumed by the DSH browser.
  */
-import { defaultOksVfs, childOksUri, decodeOksPath, type OksFsEntry, type OksVfsClient, OksVfsError } from './oks-vfs.ts'
+import { cachedOksTree, defaultOksVfs, childOksUri, decodeOksPath, type OksFsEntry, type OksVfsClient, OksVfsError } from './oks-vfs.ts'
 
 export interface WikiListFilters { query?: string; area?: string; type?: string }
 export interface WikiSummary { slug: string; title: string; area: string; type: string; summary: string; created: string }
@@ -18,6 +18,7 @@ const MAX_MARKDOWN_READ_CHARS = 512 * 1024
 const MAX_TOTAL_READ_CHARS = 8 * 1024 * 1024
 const MAX_MARKDOWN_FILES = 1_000
 const MAX_TREE_ENTRIES = 10_000
+const MAX_CONCURRENT_MARKDOWN_READS = 4
 
 function text(value: unknown): string { return typeof value === 'string' ? value.trim() : '' }
 function normalizeFilter(value: unknown): string { return text(value).slice(0, MAX_QUERY_CHARS) }
@@ -68,8 +69,50 @@ function summaryFromSource(scope: 'wiki' | 'drafts', uri: string, source: string
   }
 }
 
+async function readMarkdownEntries(
+  entries: OksFsEntry[],
+  vfs: OksVfsClient,
+): Promise<{ reads: Map<string, { content: string; returned_chars: number; truncated: boolean }>; truncated: boolean }> {
+  if (entries.length && vfs.readMany) {
+    try {
+      const items = await vfs.readMany(
+        entries.map(entry => entry.uri),
+        MAX_MARKDOWN_READ_CHARS,
+        MAX_TOTAL_READ_CHARS,
+      )
+      return {
+        reads: new Map(items.map(item => [item.uri, item])),
+        truncated: items.length < entries.length || items.some(item => item.truncated),
+      }
+    } catch {
+      // Older OKS versions do not expose read-many; retain bounded single-read compatibility.
+    }
+  }
+
+  const reads = new Map<string, { content: string; returned_chars: number; truncated: boolean }>()
+  let truncated = false
+  let nextEntry = 0
+  let reservedChars = 0
+  const readNext = async (): Promise<void> => {
+    while (true) {
+      const entry = entries[nextEntry++]
+      if (!entry) return
+      const remaining = MAX_TOTAL_READ_CHARS - reservedChars
+      if (remaining <= 0) { truncated = true; return }
+      const limit = Math.min(MAX_MARKDOWN_READ_CHARS, remaining)
+      reservedChars += limit
+      const read = await vfs.read(entry.uri, limit)
+      reservedChars -= Math.max(0, limit - Math.min(limit, read.returned_chars))
+      truncated ||= read.truncated
+      reads.set(entry.uri, read)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_MARKDOWN_READS, entries.length) }, () => readNext()))
+  return { reads, truncated }
+}
+
 async function readMarkdownList(scope: 'wiki' | 'drafts', filters: WikiListFilters, vfs: OksVfsClient): Promise<WikiListResult> {
-  const tree = await vfs.tree(`oks://${scope}/`, 10, MAX_TREE_ENTRIES)
+  const tree = await cachedOksTree(vfs, `oks://${scope}/`, 10, MAX_TREE_ENTRIES)
   const discovered = markdownEntries(tree)
   const entries = discovered.entries
   const normalizedQuery = normalizeFilter(filters.query)
@@ -82,17 +125,18 @@ async function readMarkdownList(scope: 'wiki' | 'drafts', filters: WikiListFilte
   }
   const pages: WikiSummary[] = []
   const allPages: WikiSummary[] = []
-  let readChars = 0
+  const loaded = await readMarkdownEntries(entries, vfs)
+  truncated ||= loaded.truncated
   for (const entry of entries) {
-    if (readChars >= MAX_TOTAL_READ_CHARS) { truncated = true; break }
-    const read = await vfs.read(entry.uri, Math.min(MAX_MARKDOWN_READ_CHARS, MAX_TOTAL_READ_CHARS - readChars))
-    readChars += read.returned_chars
-    truncated ||= read.truncated
+    const read = loaded.reads.get(entry.uri)
+    if (!read) continue
     const page = summaryFromSource(scope, entry.uri, read.content)
     allPages.push(page)
     if ((!matched || matched.has(entry.uri))
       && (!normalizeFilter(filters.area) || page.area === normalizeFilter(filters.area))
-      && (!normalizeFilter(filters.type) || page.type === normalizeFilter(filters.type))) pages.push(page)
+      && (!normalizeFilter(filters.type) || page.type === normalizeFilter(filters.type))) {
+      pages.push(page)
+    }
   }
   pages.sort(comparePages)
   allPages.sort(comparePages)

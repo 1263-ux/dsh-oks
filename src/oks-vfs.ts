@@ -5,6 +5,7 @@ import { resolveOksBin } from './oks-runtime.ts'
 const execFileAsync = promisify(execFile)
 const FS_SCHEMA = 'oks-fs-response/v1'
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024
+const TREE_CACHE_TTL_MS = 5_000
 
 export interface OksFsEntry {
   name: string
@@ -48,6 +49,7 @@ export interface OksFsFind {
 export interface OksVfsClient {
   tree(uri: string, depth: number, maxEntries: number): Promise<OksFsTree>
   read(uri: string, limit: number): Promise<OksFsRead>
+  readMany?(uris: string[], limit: number, maxTotalChars: number): Promise<OksFsRead[]>
   overview(uri: string): Promise<OksFsOverview>
   find(query: string, under: string, maxResults: number): Promise<OksFsFind>
 }
@@ -63,6 +65,14 @@ export class OksVfsError extends Error {
 }
 
 export type OksCommandRunner = (args: string[]) => Promise<string>
+
+interface TreeCacheEntry {
+  expiresAt: number
+  value?: OksFsTree
+  pending?: Promise<OksFsTree>
+}
+
+const treeCache = new WeakMap<OksVfsClient, Map<string, TreeCacheEntry>>()
 
 async function runOksCommand(args: string[]): Promise<string> {
   try {
@@ -109,6 +119,19 @@ function matchArray(value: unknown): Array<{ uri: string; match: string; snippet
   })
 }
 
+function readResult(value: unknown, fallbackUri: string): OksFsRead {
+  const result = asRecord(value)
+  return {
+    uri: typeof result.uri === 'string' ? result.uri : fallbackUri,
+    content: typeof result.content === 'string' ? result.content : '',
+    offset: typeof result.offset === 'number' ? result.offset : 0,
+    returned_chars: typeof result.returned_chars === 'number' ? result.returned_chars : 0,
+    total_chars: typeof result.total_chars === 'number' ? result.total_chars : 0,
+    truncated: result.truncated === true,
+    next_offset: typeof result.next_offset === 'number' ? result.next_offset : null,
+  }
+}
+
 function parseJsonResponse(stdout: string): Record<string, unknown> {
   let parsed: unknown
   try {
@@ -153,6 +176,30 @@ export function parentOksUri(uri: string): string | undefined {
   return `${clean.slice(0, slash + 1)}`
 }
 
+/** Coalesce short-lived identical tree scans; OKS remains the source of truth. */
+export async function cachedOksTree(vfs: OksVfsClient, uri: string, depth: number, maxEntries: number): Promise<OksFsTree> {
+  const key = `${uri}\u0000${depth}\u0000${maxEntries}`
+  let cache = treeCache.get(vfs)
+  if (!cache) {
+    cache = new Map()
+    treeCache.set(vfs, cache)
+  }
+  const cached = cache.get(key)
+  if (cached?.value && cached.expiresAt > Date.now()) return cached.value
+  if (cached?.pending) return cached.pending
+  const pending = vfs.tree(uri, depth, maxEntries)
+    .then(value => {
+      cache?.set(key, { expiresAt: Date.now() + TREE_CACHE_TTL_MS, value })
+      return value
+    })
+    .catch(error => {
+      cache?.delete(key)
+      throw error
+    })
+  cache.set(key, { expiresAt: 0, pending })
+  return pending
+}
+
 export function childOksUri(scope: string, path: string): string | undefined {
   const parts = path.split('/')
   if (!parts.length || parts.some(part => !part || part === '.' || part === '..' || part.includes('\\'))) return undefined
@@ -181,15 +228,19 @@ export function createOksVfs(run: OksCommandRunner = runOksCommand): OksVfsClien
     },
     async read(uri, limit) {
       const result = await request(['fs', 'read', uri, '--limit', String(limit), '--format', 'json'])
-      return {
-        uri: typeof result.uri === 'string' ? result.uri : uri,
-        content: typeof result.content === 'string' ? result.content : '',
-        offset: typeof result.offset === 'number' ? result.offset : 0,
-        returned_chars: typeof result.returned_chars === 'number' ? result.returned_chars : 0,
-        total_chars: typeof result.total_chars === 'number' ? result.total_chars : 0,
-        truncated: result.truncated === true,
-        next_offset: typeof result.next_offset === 'number' ? result.next_offset : null,
+      return readResult(result, uri)
+    },
+    async readMany(uris, limit, maxTotalChars) {
+      const result = await request([
+        'fs', 'read-many', ...uris,
+        '--limit', String(limit),
+        '--max-total-chars', String(maxTotalChars),
+        '--format', 'json',
+      ])
+      if (!Array.isArray(result.items)) {
+        throw new OksVfsError('OKS CLI returned an invalid read-many result.', 'INVALID_RESPONSE')
       }
+      return result.items.map((item, index) => readResult(item, uris[index] ?? 'oks://'))
     },
     async overview(uri) {
       const result = await request(['fs', 'overview', uri, '--format', 'json'])

@@ -1,6 +1,5 @@
 /** Read-only lifecycle diagnostics backed by the OKS CLI VFS. */
-import { defaultOksVfs, type OksVfsClient } from './oks-vfs.ts'
-import { listRawBundles } from './raw-browser.ts'
+import { cachedOksTree, defaultOksVfs, parentOksUri, type OksFsTree, type OksVfsClient } from './oks-vfs.ts'
 
 export interface OksOverview {
   connected: true
@@ -35,27 +34,59 @@ export interface OksDiagnostics {
   truncated?: boolean
 }
 
-async function lifecycleCounts(vfs: OksVfsClient): Promise<{ overview: OksOverview; wikiDirectory: boolean; draftsDirectory: boolean; rawDirectory: boolean }> {
+type LifecycleSnapshot = { overview: OksOverview; wikiDirectory: boolean; draftsDirectory: boolean; rawDirectory: boolean }
+
+const LIFECYCLE_CACHE_TTL_MS = 5_000
+const lifecycleCache = new WeakMap<OksVfsClient, { expiresAt: number; value?: LifecycleSnapshot; pending?: Promise<LifecycleSnapshot> }>()
+
+function countRawBundles(tree: OksFsTree | undefined): number {
+  if (!tree) return 0
+  return new Set(
+    tree.entries
+      .filter(entry => entry.type === 'file' && entry.name.toLowerCase() === 'bundle.json')
+      .map(entry => parentOksUri(entry.uri))
+      .filter((uri): uri is string => Boolean(uri)),
+  ).size
+}
+
+async function collectLifecycleCounts(vfs: OksVfsClient): Promise<LifecycleSnapshot> {
   const scopes = await Promise.allSettled([
-    vfs.tree('oks://wiki/', 10, 1_000),
-    vfs.tree('oks://drafts/', 10, 1_000),
-    vfs.tree('oks://raw/', 10, 10_000),
+    cachedOksTree(vfs, 'oks://wiki/', 10, 1_000),
+    cachedOksTree(vfs, 'oks://drafts/', 10, 1_000),
+    cachedOksTree(vfs, 'oks://raw/', 10, 10_000),
   ])
   const wiki = scopes[0].status === 'fulfilled' ? scopes[0].value : undefined
   const drafts = scopes[1].status === 'fulfilled' ? scopes[1].value : undefined
   const raw = scopes[2].status === 'fulfilled' ? scopes[2].value : undefined
   if (!wiki && !drafts && !raw) throw new Error('OKS VFS scopes are unavailable')
-  const rawBundles = await listRawBundles({}, vfs)
   const wikiFiles = wiki?.entries.filter(entry => entry.type === 'file' && entry.name.toLowerCase().endsWith('.md')).length ?? 0
   const draftFiles = drafts?.entries.filter(entry => entry.type === 'file' && entry.name.toLowerCase().endsWith('.md')).length ?? 0
   const rawFiles = raw?.entries.filter(entry => entry.type === 'file' && entry.name !== '.gitkeep').length ?? 0
-  const truncated = Boolean(wiki?.truncated || drafts?.truncated || raw?.truncated || rawBundles.truncated)
+  const truncated = Boolean(wiki?.truncated || drafts?.truncated || raw?.truncated)
   return {
-    overview: { connected: true, wikiCount: wikiFiles, draftCount: draftFiles, rawFileCount: rawFiles, rawBundleCount: rawBundles.total, ...(truncated ? { truncated: true } : {}) },
+    overview: { connected: true, wikiCount: wikiFiles, draftCount: draftFiles, rawFileCount: rawFiles, rawBundleCount: countRawBundles(raw), ...(truncated ? { truncated: true } : {}) },
     wikiDirectory: Boolean(wiki),
     draftsDirectory: Boolean(drafts),
     rawDirectory: Boolean(raw),
   }
+}
+
+async function lifecycleCounts(vfs: OksVfsClient): Promise<LifecycleSnapshot> {
+  const now = Date.now()
+  const cached = lifecycleCache.get(vfs)
+  if (cached?.value && cached.expiresAt > now) return cached.value
+  if (cached?.pending) return cached.pending
+  const pending = collectLifecycleCounts(vfs)
+    .then(value => {
+      lifecycleCache.set(vfs, { expiresAt: Date.now() + LIFECYCLE_CACHE_TTL_MS, value })
+      return value
+    })
+    .catch(error => {
+      lifecycleCache.delete(vfs)
+      throw error
+    })
+  lifecycleCache.set(vfs, { expiresAt: 0, pending })
+  return pending
 }
 
 export async function getOksOverview(vfs: OksVfsClient = defaultOksVfs): Promise<OksOverview> {

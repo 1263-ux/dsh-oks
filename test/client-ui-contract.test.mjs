@@ -61,6 +61,10 @@ test('client UI keeps Chinese navigation and safe settings bindings', async () =
   assert.ok(browser.includes('Wiki 是已审核知识'))
   assert.ok(browser.includes('此内容没有可预览的文本。'))
   assert.ok(browser.includes('证据包：'))
+  assert.ok(browser.includes('detailCache'))
+  assert.ok(browser.includes('pageDataByTab'))
+  assert.equal(browser.includes('setPageData(undefined); setRawData(undefined)'), false)
+  assert.ok(browser.includes('打开中…'))
 
   for (const key of ['knowledge_base_path', 'recall_floor', 'recall_topn', 'posttool_mode', 'search_backend']) {
     assert.ok(params.includes(`v.${key}`) || params.includes(`up('${key}'`) || params.includes(`String(v.${key})`))
