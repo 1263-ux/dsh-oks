@@ -18,6 +18,18 @@ test('counts Wiki, Draft, and Raw lifecycle files without exposing paths', async
   assert.equal(JSON.stringify(overview).includes('oks://'), false)
 })
 
+test('counts Raw bundles from tree metadata without reading bundle previews', async () => {
+  const reads = []
+  const base = createFakeVfs({
+    [oksUri('raw', '2026/08/bundle-1/bundle.json')]: '{}',
+    [oksUri('raw', '2026/08/bundle-1/content.md')]: '# preview',
+  })
+  const vfs = { ...base, read: async (uri, limit) => { reads.push(uri); return base.read(uri, limit) } }
+  const overview = await getOksOverview(vfs)
+  assert.equal(overview.rawBundleCount, 1)
+  assert.deepEqual(reads, [])
+})
+
 test('automatic pre-step recall defaults on and can be disabled', () => {
   assert.equal(isPrestepRecallEnabled({}), true)
   assert.equal(isPrestepRecallEnabled({ prestep_enabled: true }), true)

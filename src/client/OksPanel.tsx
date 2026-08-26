@@ -197,13 +197,22 @@ function asOverview(value: unknown): OverviewSummary {
   }
 }
 
+function displayCount(value: number | undefined, loading: boolean): number | string {
+  if (loading) return '…'
+  return typeof value === 'number' ? value : '—'
+}
+
 function WorkspaceOverview({ scope, rpc, onOpen, openSidebar }: { scope: OksScope; rpc: OksConnectionRpc; onOpen: (view: WorkspaceView) => void; openSidebar?: () => boolean }): ReactNode {
-  const [summary, setSummary] = useState<OverviewSummary>({ wikiCount: 0, draftCount: 0, rawFileCount: 0, rawBundleCount: 0 })
+  const [summary, setSummary] = useState<OverviewSummary>()
+  const [summaryLoading, setSummaryLoading] = useState(true)
   useEffect(() => {
     const controller = new AbortController()
+    setSummaryLoading(true)
     void callOksRpc(rpc, '/oks', 'overview', {}, controller.signal).then(result => {
       if (!controller.signal.aborted && result.ok) setSummary(asOverview(result.value))
-    }).catch(() => undefined)
+    }).catch(() => undefined).finally(() => {
+      if (!controller.signal.aborted) setSummaryLoading(false)
+    })
     return () => controller.abort()
   }, [rpc])
   return <div>
@@ -218,9 +227,9 @@ function WorkspaceOverview({ scope, rpc, onOpen, openSidebar }: { scope: OksScop
       </div>
     </div>
     <div aria-label="知识库摘要" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(105px, 1fr))', gap: 8, marginBottom: 12 }}>
-      {[['Wiki', summary.wikiCount], ['草稿', summary.draftCount], ['Raw 文件', summary.rawFileCount], ['Raw 包', summary.rawBundleCount]].map(([label, count]) => <div key={String(label)} style={{ padding: '10px 12px', border: `1px solid ${T.border}`, borderRadius: 9, background: T.bgLayer3 }}><div style={{ color: T.labelSecondary, fontSize: 11 }}>{label}</div><strong style={{ display: 'block', marginTop: 4, color: T.labelPrimary, fontSize: 18 }}>{count}</strong></div>)}
+      {[['Wiki', summary?.wikiCount], ['草稿', summary?.draftCount], ['Raw 文件', summary?.rawFileCount], ['Raw 包', summary?.rawBundleCount]].map(([label, count]) => <div key={String(label)} style={{ padding: '10px 12px', border: `1px solid ${T.border}`, borderRadius: 9, background: T.bgLayer3 }}><div style={{ color: T.labelSecondary, fontSize: 11 }}>{label}</div><strong style={{ display: 'block', marginTop: 4, color: T.labelPrimary, fontSize: 18 }}>{displayCount(count, summaryLoading)}</strong></div>)}
     </div>
-    {summary.truncated ? <div style={{ marginBottom: 12, color: T.labelSecondary, fontSize: 11 }}>统计已达到扫描上限，进入知识库查看完整列表。</div> : null}
+    {summary?.truncated ? <div style={{ marginBottom: 12, color: T.labelSecondary, fontSize: 11 }}>统计已达到扫描上限，进入知识库查看完整列表。</div> : null}
     <WikiBrowser rpc={rpc} onOpenSettings={() => onOpen('settings')} />
   </div>
 }
@@ -239,16 +248,20 @@ function CompactOverview({ scope, rpc, onView }: { scope: OksScope; rpc: OksConn
     () => scope.getSnapshot(),
     () => scope.getSnapshot(),
   )
-  const [summary, setSummary] = useState<OverviewSummary>({ wikiCount: 0, draftCount: 0, rawFileCount: 0, rawBundleCount: 0 })
+  const [summary, setSummary] = useState<OverviewSummary>()
+  const [summaryLoading, setSummaryLoading] = useState(true)
   useEffect(() => {
     const controller = new AbortController()
+    setSummaryLoading(true)
     void callOksRpc(rpc, '/oks', 'overview', {}, controller.signal).then(result => {
       if (!controller.signal.aborted && result.ok) setSummary(asOverview(result.value))
-    }).catch(() => undefined)
+    }).catch(() => undefined).finally(() => {
+      if (!controller.signal.aborted) setSummaryLoading(false)
+    })
     return () => controller.abort()
   }, [rpc])
   const connected = snap.status === 'ready'
-  const stats = [['Wiki', summary.wikiCount], ['草稿', summary.draftCount], ['Raw 文件', summary.rawFileCount], ['Raw 包', summary.rawBundleCount]] as const
+  const stats = [['Wiki', summary?.wikiCount], ['草稿', summary?.draftCount], ['Raw 文件', summary?.rawFileCount], ['Raw 包', summary?.rawBundleCount]] as const
   const metricMeta: Record<string, { glyph: string; tint: string }> = {
     Wiki: { glyph: 'W', tint: T.brand },
     草稿: { glyph: 'D', tint: T.warning },
@@ -270,9 +283,9 @@ function CompactOverview({ scope, rpc, onView }: { scope: OksScope; rpc: OksConn
     </div>
     <KnowledgeRecallSwitch scope={scope} />
     <div aria-label="知识库摘要" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginBottom: 14 }}>
-      {stats.map(([label, count]) => <div key={label} style={{ position: 'relative', minWidth: 0, padding: '11px 12px 10px 15px', border: `1px solid ${T.borderSoft}`, borderRadius: 10, background: T.bgLayer2, overflow: 'hidden' }}><span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: metricMeta[label].tint }} /><div style={{ display: 'flex', alignItems: 'center', gap: 7, color: T.labelSecondary, fontSize: 11 }}><span aria-hidden="true" style={{ display: 'inline-grid', placeItems: 'center', width: 18, height: 18, borderRadius: 6, background: `color-mix(in srgb, ${metricMeta[label].tint} 12%, transparent)`, color: metricMeta[label].tint, fontSize: 10, fontWeight: 700 }}>{metricMeta[label].glyph}</span>{label}</div><strong style={{ display: 'block', marginTop: 6, color: T.labelPrimary, fontSize: 20, letterSpacing: '-0.03em' }}>{count}</strong></div>)}
+      {stats.map(([label, count]) => <div key={label} style={{ position: 'relative', minWidth: 0, padding: '11px 12px 10px 15px', border: `1px solid ${T.borderSoft}`, borderRadius: 10, background: T.bgLayer2, overflow: 'hidden' }}><span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: metricMeta[label].tint }} /><div style={{ display: 'flex', alignItems: 'center', gap: 7, color: T.labelSecondary, fontSize: 11 }}><span aria-hidden="true" style={{ display: 'inline-grid', placeItems: 'center', width: 18, height: 18, borderRadius: 6, background: `color-mix(in srgb, ${metricMeta[label].tint} 12%, transparent)`, color: metricMeta[label].tint, fontSize: 10, fontWeight: 700 }}>{metricMeta[label].glyph}</span>{label}</div><strong style={{ display: 'block', marginTop: 6, color: T.labelPrimary, fontSize: 20, letterSpacing: '-0.03em' }}>{displayCount(count, summaryLoading)}</strong></div>)}
     </div>
-    {summary.truncated ? <div style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 8, background: T.bgLayer2, color: T.labelSecondary, fontSize: 11 }}>统计已达到扫描上限，进入知识库查看完整列表。</div> : null}
+    {summary?.truncated ? <div style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 8, background: T.bgLayer2, color: T.labelSecondary, fontSize: 11 }}>统计已达到扫描上限，进入知识库查看完整列表。</div> : null}
     <div style={{ display: 'grid', gap: 10 }}>
       <RecallTracePanel rpc compact />
       <ActivityPanel rpc compact />

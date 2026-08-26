@@ -354,7 +354,10 @@ export function apply(ctx: Context, config: OksConfig = {}) {
     if (traces.length > 50) traces.length = 50
     return traceId
   }
-  const hookScopeArgs = () => ['--session-id', 'dsh-oks', '--cwd', process.cwd(), '--agent-id', 'dsh-oks']
+  // The DSH profile session id is the stable history boundary. process.cwd()
+  // can change when the host is relaunched, so it must not hide retained OKS
+  // records from the Recall panel after a restart.
+  const hookScopeArgs = () => ['--session-id', 'dsh-oks', '--agent-id', 'dsh-oks']
   // Settings namespace (Host half) pairs with the browser RecallParamsCard.
   const settingsHooks = createDynamicSettingsHooks(config, async (cfg, changed) => {
     await syncOksConfig(cfg, changed)
@@ -380,7 +383,7 @@ export function apply(ctx: Context, config: OksConfig = {}) {
       const limit = Math.max(1, Math.min(20, requested))
       let retained: OksRecallTrace[] = []
       try {
-        const out = await runOks(['hook', 'history', '--format', 'json', '--limit', String(limit), '--session-id', 'dsh-oks', '--cwd', process.cwd()])
+        const out = await runOks(['hook', 'history', '--format', 'json', '--limit', String(limit), '--session-id', 'dsh-oks'])
         retained = parseOksHookHistory(out)
       } catch {
         // Current-turn traces remain useful when retained history is unavailable.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { getDraftPage, getWikiPage, listDraftPages, listWikiPages } from '../src/wiki-browser.ts'
-import { createFakeVfs, oksUri } from './fake-oks-vfs.mjs'
+import { createFakeVfs, oksUri, withFakeReadMany } from './fake-oks-vfs.mjs'
 
 const wikiFiles = {
   [oksUri('wiki', 'engineering/rpc.md')]: ['---', 'title: RPC boundary', 'type: strategy', 'area: engineering', 'created: 2026-08-19', '---', '', '# RPC boundary', '', 'The client cannot receive the local path. Deep evidence keyword: boundary-proof.'].join('\n'),
@@ -19,6 +19,18 @@ test('lists Wiki pages with metadata, CLI full-text search, and filters', async 
   assert.match(all.items[0].summary, /client cannot receive/)
   assert.deepEqual((await listWikiPages({ query: 'boundary-proof' }, vfs)).items.map(page => page.slug), ['engineering/rpc'])
   assert.deepEqual((await listWikiPages({ area: 'teamwork', type: 'concept' }, vfs)).items.map(page => page.slug), ['welcome'])
+})
+
+test('lists Wiki pages through one generic OKS batch read when available', async () => {
+  const calls = []
+  const vfs = withFakeReadMany(createFakeVfs(wikiFiles), call => calls.push(call))
+
+  const listed = await listWikiPages({}, vfs)
+
+  assert.equal(listed.total, 2)
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].uris, Object.keys(wikiFiles))
+  assert.equal(calls[0].maxTotalChars, 8 * 1024 * 1024)
 })
 
 test('loads a known slug only and prevents traversal', async () => {

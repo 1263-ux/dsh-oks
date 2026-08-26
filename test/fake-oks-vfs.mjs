@@ -41,3 +41,21 @@ export function createFakeVfs(files, options = {}) {
     },
   }
 }
+
+export function withFakeReadMany(vfs, onCall = () => {}) {
+  return {
+    ...vfs,
+    async readMany(uris, limit, maxTotalChars) {
+      onCall({ uris, limit, maxTotalChars })
+      const items = []
+      let remaining = maxTotalChars
+      for (const uri of uris) {
+        if (remaining <= 0) break
+        const item = await vfs.read(uri, Math.min(limit, remaining))
+        items.push(item)
+        remaining -= item.returned_chars
+      }
+      return items
+    },
+  }
+}

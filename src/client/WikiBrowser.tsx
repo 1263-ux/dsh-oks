@@ -1,5 +1,5 @@
 /** Read-only browser for the three OKS lifecycle layers: Wiki, Draft, and Raw. */
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { callOksRpc, type OksConnectionRpc } from './rpc.ts'
 interface PageSummary { slug: string; title: string; area: string; type: string; summary: string; created: string }
 interface PageList { total: number; items: PageSummary[]; areas: string[]; types: string[] }
@@ -8,7 +8,6 @@ interface RawSummary { id: string; bundleId: string; captureId: string; captured
 interface RawList { total: number; items: RawSummary[]; statuses: string[]; truncated?: boolean }
 interface RawDetail extends RawSummary { body: string; bodyTruncated: boolean }
 interface OksCounts { wikiCount: number; draftCount: number; rawFileCount: number; rawBundleCount: number }
-interface OksOverview extends OksCounts { connected: true }
 interface OksDiagnostics extends OksCounts { connected: boolean; status: string; message: string }
 export interface WikiBrowserProps { rpc: OksConnectionRpc; onOpenSettings?: () => void }
 type LibraryTab = 'wiki' | 'drafts' | 'raw'
@@ -37,13 +36,6 @@ function asRawList(value: unknown): RawList | undefined {
   const data = value as Partial<RawList>
   if (!Array.isArray(data.items) || typeof data.total !== 'number') return undefined
   return { total: data.total, items: data.items as RawSummary[], statuses: Array.isArray(data.statuses) ? data.statuses as string[] : [], truncated: data.truncated === true }
-}
-function asOverview(value: unknown): OksOverview | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const data = value as Partial<OksOverview>
-  if (data.connected !== true) return undefined
-  if (typeof data.wikiCount !== 'number' || typeof data.draftCount !== 'number' || typeof data.rawFileCount !== 'number' || typeof data.rawBundleCount !== 'number') return undefined
-  return data as OksOverview
 }
 function asDiagnostics(value: unknown): OksDiagnostics | undefined {
   if (!value || typeof value !== 'object') return undefined
@@ -79,16 +71,17 @@ export function WikiBrowser({ rpc, onOpenSettings }: WikiBrowserProps): ReactNod
   const [area, setArea] = useState('')
   const [type, setType] = useState('')
   const [rawStatus, setRawStatus] = useState('')
-  const [pageData, setPageData] = useState<PageList>()
+  const [pageDataByTab, setPageDataByTab] = useState<Partial<Record<'wiki' | 'drafts', PageList>>>({})
   const [rawData, setRawData] = useState<RawList>()
-  const [overview, setOverview] = useState<OksOverview>()
   const [diagnostics, setDiagnostics] = useState<OksDiagnostics>()
   const [selected, setSelected] = useState<Detail>()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [openingId, setOpeningId] = useState('')
   const [lastUpdated, setLastUpdated] = useState<Date>()
   const [refreshNonce, setRefreshNonce] = useState(0)
+  const detailCache = useRef(new Map<string, Detail>())
 
   useEffect(() => {
     const controller = new AbortController()
@@ -106,7 +99,7 @@ export function WikiBrowser({ rpc, onOpenSettings }: WikiBrowserProps): ReactNod
         } else {
           const next = result.ok ? asPageList(result.value) : undefined
           if (!next) setError(result.error?.message || readError(tab))
-          else setPageData(next)
+          else setPageDataByTab(current => ({ ...current, [tab]: next }))
         }
         setLastUpdated(new Date())
       })
@@ -117,14 +110,9 @@ export function WikiBrowser({ rpc, onOpenSettings }: WikiBrowserProps): ReactNod
 
   useEffect(() => {
     const controller = new AbortController()
-    void Promise.all([
-      callOksRpc(rpc, '/oks', 'overview', {}, controller.signal),
-      callOksRpc(rpc, '/oks', 'diagnostics', {}, controller.signal),
-    ]).then(([overviewResult, diagnosticsResult]) => {
+    void callOksRpc(rpc, '/oks', 'diagnostics', {}, controller.signal).then(diagnosticsResult => {
       if (controller.signal.aborted) return
-      const nextOverview = overviewResult.ok ? asOverview(overviewResult.value) : undefined
       const nextDiagnostics = diagnosticsResult.ok ? asDiagnostics(diagnosticsResult.value) : undefined
-      if (nextOverview) setOverview(nextOverview)
       if (nextDiagnostics) setDiagnostics(nextDiagnostics)
     }).catch(() => undefined)
     return () => controller.abort()
@@ -135,23 +123,27 @@ export function WikiBrowser({ rpc, onOpenSettings }: WikiBrowserProps): ReactNod
     return () => window.clearInterval(timer)
   }, [])
 
-  const refresh = () => { setRefreshing(true); setRefreshNonce(value => value + 1) }
+  const refresh = () => { detailCache.current.clear(); setRefreshing(true); setRefreshNonce(value => value + 1) }
   const changeTab = (next: LibraryTab) => {
-    setTab(next); setSelected(undefined); setError(''); setPageData(undefined); setRawData(undefined)
+    setTab(next); setSelected(undefined); setError('')
     setQuery(''); setArea(''); setType(''); setRawStatus('')
   }
   const open = async (id: string) => {
+    const cacheKey = `${tab}:${id}`
+    const cached = detailCache.current.get(cacheKey)
+    if (cached) { setSelected(cached); return }
     setLoading(true); setError('')
+    setOpeningId(id)
     try {
       const endpoint = tab === 'wiki' ? 'wiki-get' : tab === 'drafts' ? 'draft-get' : 'raw-get'
       const result = await callOksRpc(rpc, '/oks', endpoint, tab === 'raw' ? { id } : { slug: id })
       const detail = result.ok ? asDetail(result.value) : undefined
       if (!detail) setError(result.error?.message || `无法打开此${tabLabel(tab)}条目。`)
-      else setSelected(detail)
+      else { detailCache.current.set(cacheKey, detail); setSelected(detail) }
     } catch {
       setError(`无法打开此${tabLabel(tab)}条目。`)
     } finally {
-      setLoading(false)
+      setLoading(false); setOpeningId('')
     }
   }
 
@@ -171,6 +163,7 @@ export function WikiBrowser({ rpc, onOpenSettings }: WikiBrowserProps): ReactNod
     </div>
   }
 
+  const pageData = tab === 'raw' ? undefined : pageDataByTab[tab]
   const pageItems = pageData?.items ?? []
   const rawItems = rawData?.items ?? []
   const items = tab === 'raw' ? rawItems : pageItems
@@ -204,8 +197,12 @@ export function WikiBrowser({ rpc, onOpenSettings }: WikiBrowserProps): ReactNod
     {error ? <p style={{ margin: 0, padding: '16px', color: T.labelSecondary, fontSize: 13 }}>{error}</p> : null}
     {!loading && !error && items.length === 0 ? <p style={{ margin: 0, padding: '16px', color: T.labelSecondary, fontSize: 13 }}>暂无匹配内容。</p> : null}
     {tab === 'raw' && rawData?.truncated ? <p style={{ margin: 0, padding: '12px 16px', color: T.labelSecondary, fontSize: 12 }}>Raw 目录较大；当前仅显示首个安全扫描窗口。</p> : null}
-    {items.map(item => tab === 'raw'
-      ? <button type="button" key={(item as RawSummary).id} onClick={() => void open((item as RawSummary).id)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '14px 16px', border: 0, borderBottom: `1px solid ${T.border}`, background: 'transparent', color: T.labelPrimary, cursor: 'pointer' }}><div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{(item as RawSummary).captureId}</div><div style={{ marginTop: 3, color: T.labelSecondary, fontSize: 12 }}>{(item as RawSummary).status} · {(item as RawSummary).sourceType}{(item as RawSummary).capturedAt ? ` · ${(item as RawSummary).capturedAt}` : ''} · {(item as RawSummary).fileCount} 个文件</div><p style={{ margin: '7px 0 0', color: T.labelSecondary, fontSize: 12, lineHeight: 1.5 }}>{(item as RawSummary).summary}</p></button>
-      : <button type="button" key={(item as PageSummary).slug} onClick={() => void open((item as PageSummary).slug)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '14px 16px', border: 0, borderBottom: `1px solid ${T.border}`, background: 'transparent', color: T.labelPrimary, cursor: 'pointer' }}><div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{(item as PageSummary).title}</div><div style={{ marginTop: 3, color: T.labelSecondary, fontSize: 12 }}>{(item as PageSummary).area} · {(item as PageSummary).type}{(item as PageSummary).created ? ` · ${(item as PageSummary).created}` : ''}</div><p style={{ margin: '7px 0 0', color: T.labelSecondary, fontSize: 12, lineHeight: 1.5 }}>{(item as PageSummary).summary}</p></button>)}
+    {items.map(item => {
+      const id = tab === 'raw' ? (item as RawSummary).id : (item as PageSummary).slug
+      const opening = openingId === id
+      return tab === 'raw'
+        ? <button type="button" key={id} disabled={opening} onClick={() => void open(id)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '14px 16px', border: 0, borderBottom: `1px solid ${T.border}`, background: 'transparent', color: T.labelPrimary, cursor: opening ? 'wait' : 'pointer', opacity: opening ? 0.7 : 1 }}><div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{(item as RawSummary).captureId}{opening ? ' · 打开中…' : ''}</div><div style={{ marginTop: 3, color: T.labelSecondary, fontSize: 12 }}>{(item as RawSummary).status} · {(item as RawSummary).sourceType}{(item as RawSummary).capturedAt ? ` · ${(item as RawSummary).capturedAt}` : ''} · {(item as RawSummary).fileCount} 个文件</div><p style={{ margin: '7px 0 0', color: T.labelSecondary, fontSize: 12, lineHeight: 1.5 }}>{(item as RawSummary).summary}</p></button>
+        : <button type="button" key={id} disabled={opening} onClick={() => void open(id)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '14px 16px', border: 0, borderBottom: `1px solid ${T.border}`, background: 'transparent', color: T.labelPrimary, cursor: opening ? 'wait' : 'pointer', opacity: opening ? 0.7 : 1 }}><div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{(item as PageSummary).title}{opening ? ' · 打开中…' : ''}</div><div style={{ marginTop: 3, color: T.labelSecondary, fontSize: 12 }}>{(item as PageSummary).area} · {(item as PageSummary).type}{(item as PageSummary).created ? ` · ${(item as PageSummary).created}` : ''}</div><p style={{ margin: '7px 0 0', color: T.labelSecondary, fontSize: 12, lineHeight: 1.5 }}>{(item as PageSummary).summary}</p></button>
+    })}
   </div>
 }
