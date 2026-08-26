@@ -89,8 +89,8 @@ function KnowledgeRecallSwitch({ scope }: { scope: OksScope }): ReactNode {
   if (snap.status === 'unavailable') return null
   const toggleStyle: CSSProperties = {
     position: 'relative', width: 78, height: 30, flex: '0 0 auto', padding: 0,
-    border: `1px solid ${enabled ? T.brandBorder : T.border}`, borderRadius: 999,
-    background: enabled ? T.brandBorder : T.border, color: T.labelSecondary,
+    border: `1px solid ${enabled ? T.success : '#c4c9d1'}`, borderRadius: 999,
+    background: enabled ? T.success : '#d9dde3', color: T.labelSecondary,
     cursor: snap.writable && !saving ? 'pointer' : 'not-allowed',
     fontSize: 10, fontWeight: 700, letterSpacing: '.04em',
   }
@@ -101,11 +101,11 @@ function KnowledgeRecallSwitch({ scope }: { scope: OksScope }): ReactNode {
         <p style={{ margin: '4px 0 0', fontSize: 12, lineHeight: 1.5, color: T.labelSecondary }}>当问题相关时，Agent 会优先参考已审核的 Wiki 知识。关闭后不会影响手动召回或工具调用后的记忆提示。</p>
       </div>
       <button type="button" role="switch" aria-label="回答时自动参考我的知识" aria-checked={enabled} disabled={!snap.writable || saving || snap.status === 'loading'} onClick={() => void update(!enabled)} style={toggleStyle}>
-        <span aria-hidden="true" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-around', padding: '0 7px' }}>
-          <span style={{ color: enabled ? T.labelSecondary : T.labelPrimary }}>OFF</span>
-          <span style={{ color: enabled ? T.labelPrimary : T.labelSecondary }}>ON</span>
+        <span aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-around', padding: '0 7px' }}>
+          <span style={{ color: enabled ? 'rgba(255,255,255,.78)' : '#4b5563' }}>OFF</span>
+          <span style={{ color: enabled ? T.success : '#6b7280' }}>ON</span>
         </span>
-        <span aria-hidden="true" style={{ position: 'absolute', top: 3, left: enabled ? 42 : 3, width: 32, height: 22, borderRadius: 999, background: enabled ? T.brand : T.bgLayer2, boxShadow: '0 1px 3px rgba(15, 23, 42, .22)', transition: 'left .16s ease' }} />
+        <span aria-hidden="true" style={{ position: 'absolute', top: 3, left: enabled ? 42 : 3, zIndex: 1, width: 32, height: 22, borderRadius: 999, background: '#fff', boxShadow: '0 1px 3px rgba(15, 23, 42, .22)', transition: 'left .16s ease' }} />
         {saving ? <span aria-hidden="true" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', fontSize: 9 }}>…</span> : null}
       </button>
     </div>

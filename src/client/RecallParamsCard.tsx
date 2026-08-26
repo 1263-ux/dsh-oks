@@ -44,6 +44,7 @@ const T = {
   labelPrimary: 'var(--dsw-alias-label-primary)',
   labelSecondary: 'var(--dsw-alias-label-secondary)',
   brand: 'var(--dsw-alias-brand-primary)',
+  success: '#16a36b',
 }
 
 const card: React.CSSProperties = {
@@ -171,12 +172,12 @@ export function RecallParamsCard(props: RecallParamsCardProps): ReactNode {
               <button id={gid('pe')} type="button" role="switch" aria-checked={Boolean(v.prestep_enabled ?? true)}
                 onClick={() => up('prestep_enabled', !Boolean(v.prestep_enabled ?? true))}
                 aria-label="自动召回"
-                style={{ position: 'relative', alignSelf: 'flex-start', width: 78, height: 30, padding: 0, border: `1px solid ${T.border}`, borderRadius: 999, background: T.bgLayer2, color: T.labelSecondary, cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: '.04em' }}>
-                <span aria-hidden="true" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-around', padding: '0 7px' }}>
-                  <span style={{ color: Boolean(v.prestep_enabled ?? true) ? T.labelSecondary : T.labelPrimary }}>OFF</span>
-                  <span style={{ color: Boolean(v.prestep_enabled ?? true) ? T.labelPrimary : T.labelSecondary }}>ON</span>
+                style={{ position: 'relative', alignSelf: 'flex-start', width: 78, height: 30, padding: 0, border: `1px solid ${Boolean(v.prestep_enabled ?? true) ? T.success : '#c4c9d1'}`, borderRadius: 999, background: Boolean(v.prestep_enabled ?? true) ? T.success : '#d9dde3', color: T.labelSecondary, cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: '.04em' }}>
+                <span aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-around', padding: '0 7px' }}>
+                  <span style={{ color: Boolean(v.prestep_enabled ?? true) ? 'rgba(255,255,255,.78)' : '#4b5563' }}>OFF</span>
+                  <span style={{ color: Boolean(v.prestep_enabled ?? true) ? T.success : '#6b7280' }}>ON</span>
                 </span>
-                <span aria-hidden="true" style={{ position: 'absolute', top: 3, left: Boolean(v.prestep_enabled ?? true) ? 42 : 3, width: 32, height: 22, borderRadius: 999, background: Boolean(v.prestep_enabled ?? true) ? T.brand : T.bgLayer2, boxShadow: '0 1px 3px rgba(15, 23, 42, .22)', transition: 'left .16s ease' }} />
+                <span aria-hidden="true" style={{ position: 'absolute', top: 3, left: Boolean(v.prestep_enabled ?? true) ? 42 : 3, zIndex: 1, width: 32, height: 22, borderRadius: 999, background: '#fff', boxShadow: '0 1px 3px rgba(15, 23, 42, .22)', transition: 'left .16s ease' }} />
               </button>
             </Field>
           </div>
