@@ -170,8 +170,13 @@ export function RecallParamsCard(props: RecallParamsCardProps): ReactNode {
             <Field id={gid('pe')} lab="自动召回" h="开启后，每轮回答前由 OKS 依据知识库的召回参数执行；关闭后仍可手动调用 oks_recall。">
               <button id={gid('pe')} type="button" role="switch" aria-checked={Boolean(v.prestep_enabled ?? true)}
                 onClick={() => up('prestep_enabled', !Boolean(v.prestep_enabled ?? true))}
-                style={{ alignSelf: 'flex-start', minWidth: 68, border: 0, borderRadius: 999, padding: '7px 11px', background: Boolean(v.prestep_enabled ?? true) ? T.brand : T.border, color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
-                {Boolean(v.prestep_enabled ?? true) ? '已开启' : '已关闭'}
+                aria-label="自动召回"
+                style={{ position: 'relative', alignSelf: 'flex-start', width: 78, height: 30, padding: 0, border: `1px solid ${T.border}`, borderRadius: 999, background: T.bgLayer2, color: T.labelSecondary, cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: '.04em' }}>
+                <span aria-hidden="true" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-around', padding: '0 7px' }}>
+                  <span style={{ color: Boolean(v.prestep_enabled ?? true) ? T.labelSecondary : T.labelPrimary }}>OFF</span>
+                  <span style={{ color: Boolean(v.prestep_enabled ?? true) ? T.labelPrimary : T.labelSecondary }}>ON</span>
+                </span>
+                <span aria-hidden="true" style={{ position: 'absolute', top: 3, left: Boolean(v.prestep_enabled ?? true) ? 42 : 3, width: 32, height: 22, borderRadius: 999, background: Boolean(v.prestep_enabled ?? true) ? T.brand : T.bgLayer2, boxShadow: '0 1px 3px rgba(15, 23, 42, .22)', transition: 'left .16s ease' }} />
               </button>
             </Field>
           </div>
