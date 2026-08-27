@@ -197,6 +197,96 @@ function asOverview(value: unknown): OverviewSummary {
   }
 }
 
+interface LintResult { errors: number; warnings: number; items: string[]; summary: string; passed: boolean }
+
+function HealthCheckCard({ rpc }: { rpc: OksConnectionRpc }): ReactNode {
+  const [result, setResult] = useState<LintResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const runLint = () => {
+    setLoading(true); setExpanded(false)
+    void callOksRpc(rpc, '/oks', 'lint', {}, undefined as never)
+      .then(r => { if (r.ok) { setResult(r.value as LintResult); setExpanded(!((r.value as LintResult)?.passed)) } })
+      .catch(() => undefined)
+      .finally(() => setLoading(false))
+  }
+  const tint = !result ? T.labelSecondary : result.passed ? T.success : result.errors > 0 ? T.danger : T.warning
+  const glyph = !result ? '◎' : result.passed ? '✓' : result.errors > 0 ? '✗' : '!'
+  const label = !result ? '未检查' : result.passed ? '全部通过' : result.errors > 0 ? `${result.errors} 个错误` : `${result.warnings} 个警告`
+  return <section aria-label="知识库健康检查" style={{ border: `1px solid ${T.border}`, borderRadius: 10, background: T.bgLayer3, overflow: 'hidden', marginBottom: 12 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '11px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span aria-hidden="true" style={{ display: 'inline-grid', placeItems: 'center', width: 22, height: 22, borderRadius: 6, background: `color-mix(in srgb, ${tint} 12%, transparent)`, color: tint, fontSize: 12, fontWeight: 700 }}>{glyph}</span>
+        <div>
+          <div style={{ color: T.labelPrimary, fontSize: 13, fontWeight: 600 }}>健康检查</div>
+          <div style={{ color: tint, fontSize: 11, marginTop: 2 }}>{loading ? '检查中…' : label}</div>
+        </div>
+      </div>
+      <button type="button" disabled={loading} onClick={runLint} style={{ border: `1px solid ${T.border}`, borderRadius: 7, padding: '5px 10px', background: T.bgLayer2, color: T.labelPrimary, cursor: loading ? 'wait' : 'pointer', fontSize: 12, fontWeight: 600, opacity: loading ? 0.6 : 1 }}>
+        {loading ? '检查中' : result ? '重新检查' : '运行检查'}
+      </button>
+    </div>
+    {result?.summary ? <div style={{ padding: '0 12px 8px', color: T.labelSecondary, fontSize: 11, lineHeight: 1.45 }}>{result.summary}</div> : null}
+    {result && result.items.length > 0 && expanded ? <div style={{ borderTop: `1px solid ${T.border}`, padding: '8px 12px' }}>
+      {result.items.map((item, i) => <div key={i} style={{ padding: '4px 0', color: i < result.errors ? T.danger : T.warning, fontSize: 11, lineHeight: 1.45 }}>
+        {i < result.errors ? '✗ ' : '! '}{item}
+      </div>)}
+    </div> : null}
+    {result && result.items.length > 0 ? <button type="button" onClick={() => setExpanded(v => !v)} style={{ width: '100%', border: 0, borderTop: `1px solid ${T.border}`, padding: '6px 12px', background: T.bgLayer2, color: T.labelSecondary, cursor: 'pointer', fontSize: 11 }}>
+      {expanded ? '收起详情' : `展开 ${result.items.length} 个问题`}
+    </button> : null}
+  </section>
+}
+
+interface TierData { hot: number; warm: number; cold: number; evictable: number; qualityAvg: number; pinned: number; types: Record<string, number> }
+
+const tierMeta: Record<string, { label: string; tint: string }> = {
+  hot: { label: 'Hot', tint: '#dc5a3a' },
+  warm: { label: 'Warm', tint: T.warning },
+  cold: { label: 'Cold', tint: '#5b8def' },
+  evictable: { label: 'Evict', tint: T.border },
+}
+
+function TierDistributionCard({ rpc }: { rpc: OksConnectionRpc }): ReactNode {
+  const [tiers, setTiers] = useState<TierData | null>(null)
+  const [loading, setLoading] = useState(false)
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    void callOksRpc(rpc, '/oks', 'status-tiers', {}, controller.signal)
+      .then(r => { if (!controller.signal.aborted && r.ok) setTiers(r.value as TierData) })
+      .catch(() => undefined)
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [rpc])
+  if (loading && !tiers) return <div style={{ padding: '12px', border: `1px solid ${T.border}`, borderRadius: 10, background: T.bgLayer3, marginBottom: 12, color: T.labelSecondary, fontSize: 12 }}>加载 tier 分布…</div>
+  if (!tiers) return null
+  const total = tiers.hot + tiers.warm + tiers.cold + tiers.evictable
+  const entries = Object.entries(tierMeta).map(([key, meta]) => ({ key, ...meta, count: tiers[key as keyof TierData] as number }))
+  return <section aria-label="Tier 分布" style={{ border: `1px solid ${T.border}`, borderRadius: 10, background: T.bgLayer3, overflow: 'hidden', marginBottom: 12 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 12px', borderBottom: `1px solid ${T.border}` }}>
+      <div style={{ color: T.labelPrimary, fontSize: 13, fontWeight: 600 }}>Tier 分布</div>
+      <span style={{ color: T.labelSecondary, fontSize: 11 }}>质量均分 {tiers.qualityAvg.toFixed(0)}/100</span>
+    </div>
+    {total > 0 ? <div style={{ padding: '10px 12px' }}>
+      <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', marginBottom: 10, background: T.bgLayer2 }}>
+        {entries.map(e => e.count > 0 ? <div key={e.key} style={{ width: `${(e.count / total) * 100}%`, background: e.tint, minWidth: e.count > 0 ? 2 : 0 }} /> : null)}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+        {entries.map(e => <div key={e.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 2, background: e.tint, flexShrink: 0 }} />
+          <span style={{ color: T.labelSecondary, fontSize: 11 }}>{e.label}</span>
+          <strong style={{ color: T.labelPrimary, fontSize: 12, marginLeft: 'auto' }}>{e.count}</strong>
+        </div>)}
+      </div>
+    </div> : <div style={{ padding: '12px', color: T.labelSecondary, fontSize: 11 }}>暂无 Wiki 页面。</div>}
+    {Object.keys(tiers.types).length > 0 ? <div style={{ padding: '0 12px 10px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {Object.entries(tiers.types).map(([type, count]) => <span key={type} style={{ fontSize: 10, color: T.labelSecondary, padding: '2px 6px', border: `1px solid ${T.border}`, borderRadius: 4 }}>{type}: {count}</span>)}
+      {tiers.pinned > 0 ? <span style={{ fontSize: 10, color: T.warning, padding: '2px 6px', border: `1px solid ${T.border}`, borderRadius: 4 }}>pinned: {tiers.pinned}</span> : null}
+    </div> : null}
+  </section>
+}
+
 function WorkspaceOverview({ scope, rpc, onOpen, openSidebar }: { scope: OksScope; rpc: OksConnectionRpc; onOpen: (view: WorkspaceView) => void; openSidebar?: () => boolean }): ReactNode {
   const [summary, setSummary] = useState<OverviewSummary>({ wikiCount: 0, draftCount: 0, rawFileCount: 0, rawBundleCount: 0 })
   useEffect(() => {
@@ -221,6 +311,8 @@ function WorkspaceOverview({ scope, rpc, onOpen, openSidebar }: { scope: OksScop
       {[['Wiki', summary.wikiCount], ['草稿', summary.draftCount], ['Raw 文件', summary.rawFileCount], ['Raw 包', summary.rawBundleCount]].map(([label, count]) => <div key={String(label)} style={{ padding: '10px 12px', border: `1px solid ${T.border}`, borderRadius: 9, background: T.bgLayer3 }}><div style={{ color: T.labelSecondary, fontSize: 11 }}>{label}</div><strong style={{ display: 'block', marginTop: 4, color: T.labelPrimary, fontSize: 18 }}>{count}</strong></div>)}
     </div>
     {summary.truncated ? <div style={{ marginBottom: 12, color: T.labelSecondary, fontSize: 11 }}>统计已达到扫描上限，进入知识库查看完整列表。</div> : null}
+    <HealthCheckCard rpc={rpc} />
+    <TierDistributionCard rpc={rpc} />
     <WikiBrowser rpc={rpc} onOpenSettings={() => onOpen('settings')} />
   </div>
 }
@@ -273,6 +365,8 @@ function CompactOverview({ scope, rpc, onView }: { scope: OksScope; rpc: OksConn
       {stats.map(([label, count]) => <div key={label} style={{ position: 'relative', minWidth: 0, padding: '11px 12px 10px 15px', border: `1px solid ${T.borderSoft}`, borderRadius: 10, background: T.bgLayer2, overflow: 'hidden' }}><span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: metricMeta[label].tint }} /><div style={{ display: 'flex', alignItems: 'center', gap: 7, color: T.labelSecondary, fontSize: 11 }}><span aria-hidden="true" style={{ display: 'inline-grid', placeItems: 'center', width: 18, height: 18, borderRadius: 6, background: `color-mix(in srgb, ${metricMeta[label].tint} 12%, transparent)`, color: metricMeta[label].tint, fontSize: 10, fontWeight: 700 }}>{metricMeta[label].glyph}</span>{label}</div><strong style={{ display: 'block', marginTop: 6, color: T.labelPrimary, fontSize: 20, letterSpacing: '-0.03em' }}>{count}</strong></div>)}
     </div>
     {summary.truncated ? <div style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 8, background: T.bgLayer2, color: T.labelSecondary, fontSize: 11 }}>统计已达到扫描上限，进入知识库查看完整列表。</div> : null}
+    <HealthCheckCard rpc={rpc} />
+    <TierDistributionCard rpc={rpc} />
     <div style={{ display: 'grid', gap: 10 }}>
       <RecallTracePanel rpc compact />
       <ActivityPanel rpc compact />
